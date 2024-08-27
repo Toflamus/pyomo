@@ -80,6 +80,12 @@ class GDP_LDBD_Solver(GDP_LDSDA_Solver):
     _add_tolerance_configs(CONFIG)
     _add_ldsda_configs(CONFIG)
 
+    CONFIG.declare('infinity_output', ConfigValue(
+        default=1e8,
+        domain=float,
+        description="Value to use for infeasible points instead of infinity."
+    ))
+
     algorithm = 'LDBD'
 
     # Override solve() to customize the docstring for this solver
@@ -307,8 +313,8 @@ class GDP_LDBD_Solver(GDP_LDSDA_Solver):
                     return primal_improved, subproblem_obj_value
                 else:
                     config.logger.warning(f"Solver returned a non-optimal status: {result.solver.termination_condition}")
-                    self.explored_point_dict[tuple(external_var_value)] = float('inf')
-                    return False, float('inf')
+                    self.explored_point_dict[tuple(external_var_value)] = config.infinity_output # Use the configured value instead of infinity
+                    return False, config.infinity_output
         except RuntimeError as e:
             config.logger.warning(f"RuntimeError encountered for external variables {external_var_value}: {str(e)}")
             self.explored_point_dict[tuple(external_var_value)] = None
@@ -375,92 +381,101 @@ class GDP_LDBD_Solver(GDP_LDSDA_Solver):
 
         # Return the values of the external variables and the objective value
         return external_var_values, objective_value
-
-        
-
-    # def generate_benders_cuts(self, config):
-    #     # # _add_cuts_to_discrete_problem function from gloa.py
-    #     # _add_cuts_to_discrete_problem()
-    #     # Step 1: Solve the subproblem with the fixed external variables
-    #     # You already have a method to solve the subproblem (_solve_GDP_subproblem)
-    #     external_var_values = [value(var) for var in self.working_model_util_block.external_vars]
-
-    #     # Solve the subproblem with these fixed values
-    #     is_feasible = self._solve_GDP_subproblem(external_var_values, 'Benders cut generation', config)
-
-    #     # Step 2: Check if the subproblem is feasible or infeasible
-    #     if not is_feasible:
-    #         # Feasibility Cuts Generation
-    #         infeasibility_cut = sum(
-    #             1 if value(self.working_model_util_block.external_vars[i]) == val else 0
-    #             for i, val in enumerate(external_var_values)
-    #         )
-    #         self.solve_master_problem.benders_cuts.add(infeasibility_cut <= len(external_var_values) - 1)
-    #         print(f"Added feasibility cut: {infeasibility_cut <= len(external_var_values) - 1}")
-
-    #     else:
-    #         # Optimality cut generation
-    #         subproblem_obj_value = value(self.working_model.obj)
-    #         # Generate a simple linear expression for the cut without needing specific coefficients
-    #         # We assume that the relationship between z and the external variables is linear
-    #         optimality_cut = self.master_problem.z >= subproblem_obj_value + sum(
-    #             self.working_model_util_block.external_vars[i] for i in range(len(external_var_values))
-    #         )
-            
-    #         # Add the optimality cut to the master problem
-    #         self.master_problem.benders_cuts.add(optimality_cut)
-    #         print(f"Added optimality cut: {optimality_cut}")
+  
+   
 
     def generate_benders_cuts(self, config):
         # Step 1: Get the current external variable coordinates from the master problem
         external_var_values = [value(var) for var in self.master_problem.external_vars]
 
-        # Debugging: Print current point being used for Benders cuts
-        print(f"Current external variable coordinates: {external_var_values}")
+        # Check if the current point is infeasible
+        if self.explored_point_dict.get(tuple(external_var_values), None) == float('inf'):
+            # Handle infeasibility by generating a feasibility cut
+            print(f"Generating feasibility cut for external variables: {external_var_values}")
 
-        # Create the subproblem model for Benders cut generation
-        subproblem_model = ConcreteModel()
+            # Generate the subproblem model for feasibility cut generation
+            Infeasible_model = ConcreteModel()
 
-        # Dynamically create p coefficients (p1, p2, ..., pn) based on the number of external variables
-        num_disjunctions = len(external_var_values)
-        subproblem_model.p = Var(range(num_disjunctions), within=Reals, initialize=0.0)
-        subproblem_model.alpha = Var(within=Reals, initialize=0.0)
+            # Dynamically create p coefficients (p1, p2, ..., pn) based on the number of external variables
+            num_disjunctions = len(external_var_values)
+            Infeasible_model.p = Var(range(num_disjunctions), within=Reals, initialize=0.0)
+            Infeasible_model.alpha = Var(within=Reals, initialize=0.0)
 
-        # Define the objective function for the subproblem
-        subproblem_model.objective = Objective(
-            expr=sum(subproblem_model.p[i] * external_var_values[i] for i in range(num_disjunctions)) + subproblem_model.alpha,
-            sense=maximize
-        )
+            # Define the objective function for the subproblem
+            Infeasible_model.objective = Objective(
+                expr=sum(Infeasible_model.p[i] * external_var_values[i] for i in range(num_disjunctions)) + Infeasible_model.alpha,
+                sense=maximize
+            )
 
-        # Add constraints from the explored point dictionary (previously solved points)
-        subproblem_model.constraints = ConstraintList()
-        for (coord, rhs_value) in self.explored_point_dict.items():
-            # Generate constraint based on the explored points
-            constraint_expr = sum(subproblem_model.p[i] * coord[i] for i in range(num_disjunctions)) + subproblem_model.alpha <= rhs_value
-            subproblem_model.constraints.add(constraint_expr)
+            # Add constraints from the explored point dictionary (previously solved points)
+            Infeasible_model.constraints = ConstraintList()
+            for (coord, rhs_value) in self.explored_point_dict.items():
+                if rhs_value != float('inf'):  # Only consider feasible points TODO: consider also the infeasible points to be the constraints. even if redundant.
+                    constraint_expr = sum(Infeasible_model.p[i] * coord[i] for i in range(num_disjunctions)) + Infeasible_model.alpha <= rhs_value
+                    Infeasible_model.constraints.add(constraint_expr)
 
-        # # Debug: Print the full subproblem model before solving
-        # print("Subproblem Model Before Solving:")
-        # subproblem_model.pprint()  # Display all model components before solving
+            
+            # Step 5: Solve the subproblem using Gurobi
+            solver = SolverFactory('gurobi')
+            solver.options['Method'] = 2  # Set the method to interior point
+            solver.solve(Infeasible_model, tee=True)
 
-        # Step 5: Solve the subproblem using Gurobi
-        solver = SolverFactory('gurobi')
-        solver.options['Method'] = 2  # Set the method to interior point
-        solver.solve(subproblem_model, tee=False)
+            # Extract p coefficients and alpha from the solution
+            p_coefficients = [value(Infeasible_model.p[i]) for i in range(num_disjunctions)]
+            alpha_value = value(Infeasible_model.alpha)
 
-        # Extract p coefficients and alpha from the solution
-        p_coefficients = [value(subproblem_model.p[i]) for i in range(num_disjunctions)]
-        alpha_value = value(subproblem_model.alpha)
+            # Generate feasibility cut: p1 * x1 + p2 * x2 + ... + alpha <= z
+            benders_cut_expr = sum(p_coefficients[i] * self.master_problem.external_vars[i] for i in range(num_disjunctions)) + alpha_value
 
-        # Generate Benders cut: p1 * x1 + p2 * x2 + ... + alpha <= z
-        benders_cut_expr = sum(p_coefficients[i] * self.master_problem.external_vars[i] for i in range(num_disjunctions)) + alpha_value
+            # Log the feasibility cut for debugging
+            print(f"Generated feasibility cut: {benders_cut_expr} <= z")
+            print(f"p coefficients: {p_coefficients}, alpha: {alpha_value}, infeasible objective: {value(Infeasible_model.objective)}")
+            
+            # Add feasibility cut to the master problem's constraint list
+            self.master_problem.benders_cuts.add(benders_cut_expr <= self.master_problem.z)
 
-        # Log the generated cut for debugging
-        print(f"Generated Benders cut: {benders_cut_expr} <= z")
-        print(f"p coefficients: {p_coefficients}, alpha: {alpha_value}")
+            # # Store the objective value of the subproblem for use in the loop
+            # self.current_subproblem_obj_value = value(Infeasible_model.objective) 
+        else:
+            # Generate the subproblem model for Benders cut generation
+            subproblem_model = ConcreteModel()
 
-        # Add the Benders cut to the master problem's constraint list
-        self.master_problem.benders_cuts.add(benders_cut_expr <= self.master_problem.z)
+            # Dynamically create p coefficients (p1, p2, ..., pn) based on the number of external variables
+            num_disjunctions = len(external_var_values)
+            subproblem_model.p = Var(range(num_disjunctions), within=Reals, initialize=0.0)
+            subproblem_model.alpha = Var(within=Reals, initialize=0.0)
 
-        # Store the objective value of the subproblem for use in the loop
-        self.current_subproblem_obj_value = value(subproblem_model.objective)
+            # Define the objective function for the subproblem
+            subproblem_model.objective = Objective(
+                expr=sum(subproblem_model.p[i] * external_var_values[i] for i in range(num_disjunctions)) + subproblem_model.alpha,
+                sense=maximize
+            )
+
+            # Add constraints from the explored point dictionary (previously solved points)
+            subproblem_model.constraints = ConstraintList()
+            for (coord, rhs_value) in self.explored_point_dict.items():
+                if rhs_value != float('inf'):  # Only consider feasible points TODO: consider also the infeasible points to be the constraints. even if redundant.
+                    constraint_expr = sum(subproblem_model.p[i] * coord[i] for i in range(num_disjunctions)) + subproblem_model.alpha <= rhs_value
+                    subproblem_model.constraints.add(constraint_expr)
+
+            # Step 5: Solve the subproblem using Gurobi
+            solver = SolverFactory('gurobi')
+            solver.options['Method'] = 2  # Set the method to interior point
+            solver.solve(subproblem_model, tee=False)
+
+            # Extract p coefficients and alpha from the solution
+            p_coefficients = [value(subproblem_model.p[i]) for i in range(num_disjunctions)]
+            alpha_value = value(subproblem_model.alpha)
+
+            # Generate Benders cut: p1 * x1 + p2 * x2 + ... + alpha <= z
+            benders_cut_expr = sum(p_coefficients[i] * self.master_problem.external_vars[i] for i in range(num_disjunctions)) + alpha_value
+
+            # Log the generated cut for debugging
+            print(f"Generated Benders cut: {benders_cut_expr} <= z")
+            print(f"p coefficients: {p_coefficients}, alpha: {alpha_value}")
+
+            # Add the Benders cut to the master problem's constraint list
+            self.master_problem.benders_cuts.add(benders_cut_expr <= self.master_problem.z)
+
+            # Store the objective value of the subproblem for use in the loop
+            self.current_subproblem_obj_value = value(subproblem_model.objective)
