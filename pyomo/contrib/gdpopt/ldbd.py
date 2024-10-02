@@ -276,11 +276,12 @@ class GDP_LDBD_Solver(GDP_LDSDA_Solver):
         try:
             with SuppressInfeasibleWarning():
                 try:
+                    TransformationFactory('gdp.bigm').apply_to(subproblem)
                     fbbt(subproblem, integer_tol=config.integer_tolerance)
                     TransformationFactory('contrib.detect_fixed_vars').apply_to(subproblem)
                     TransformationFactory('contrib.propagate_fixed_vars').apply_to(subproblem)
                     TransformationFactory('contrib.deactivate_trivial_constraints').apply_to(subproblem, tmp=False, ignore_infeasible=False)
-                    TransformationFactory('gdp.bigm').apply_to(subproblem)
+    
                 except InfeasibleConstraintException:
                     config.logger.info(f"Subproblem infeasible for external variable values: {external_var_value}")
                     self.explored_point_dict[tuple(external_var_value)] = float('inf')
