@@ -28,7 +28,7 @@ except ImportError:
 
 
 def read(*rnames):
-    with open(os.path.join(os.path.dirname(__file__), *rnames)) as README:
+    with open(os.path.join(os.path.dirname(__file__), *rnames), encoding='utf-8') as README:
         # Strip all leading badges up to, but not including the COIN-OR
         # badge so that they do not appear in the PyPI description
         while True:
