@@ -65,7 +65,7 @@ ExternalVarInfo = namedtuple(
 )
 class GDP_LDBD_Solver(GDP_LDSDA_Solver):
     """The GDPopt (Generalized Disjunctive Programming optimizer)
-    LD-BD (Logic-based Discrete Benders Decomposition (LD-SDA)) solver.
+    LD-BD (Logic-based Discrete Benders Decomposition (LD-BD)) solver.
 
     Accepts models that can include nonlinear, continuous variables and
     constraints, as well as logical conditions.
@@ -93,6 +93,9 @@ class GDP_LDBD_Solver(GDP_LDSDA_Solver):
     def solve(self, model, **kwds):
         return super().solve(model, **kwds)
 
+    def _log_citation(self, config):
+        config.logger.info("\n" + """TODO: Add citation for LD-BD here.
+        """.strip())
 
     def _solve_gdp(self, model, config):
         """Solve the GDP model.
@@ -124,18 +127,19 @@ class GDP_LDBD_Solver(GDP_LDSDA_Solver):
         add_disjunct_list(util_block)
         add_algebraic_variable_list(util_block)
         add_boolean_variable_lists(util_block)
-
+        # Add disjunction list to utility block, align with the ldsda structure
+        util_block.config_disjunction_list = config.disjunction_list
+        util_block.config_logical_constraint_list = config.logical_constraint_list
         # We will use the working_model to perform the LDBD search.
         self.working_model = model.clone()
-        # TODO: I don't like the name way, try something else?
-        self.working_model_util_block = self.working_model.component(util_block.name)
+        
+        self.working_model_util_block = self.working_model.find_component(util_block)
 
         add_disjunction_list(self.working_model_util_block)
         TransformationFactory('core.logical_to_linear').apply_to(self.working_model)
         # Now that logical_to_disjunctive has been called.
         add_transformed_boolean_variable_list(self.working_model_util_block)
         self._get_external_information(self.working_model_util_block, config)
-
         self.directions = self._get_directions(
             self.number_of_external_variables, config
         )
@@ -273,53 +277,143 @@ class GDP_LDBD_Solver(GDP_LDSDA_Solver):
         subproblem = self.working_model.clone()
         TransformationFactory('core.logical_to_linear').apply_to(subproblem)
 
-        try:
-            with SuppressInfeasibleWarning():
-                try:
-                    TransformationFactory('gdp.bigm').apply_to(subproblem)
-                    fbbt(subproblem, integer_tol=config.integer_tolerance)
-                    TransformationFactory('contrib.detect_fixed_vars').apply_to(subproblem)
-                    TransformationFactory('contrib.propagate_fixed_vars').apply_to(subproblem)
-                    TransformationFactory('contrib.deactivate_trivial_constraints').apply_to(subproblem, tmp=False, ignore_infeasible=False)
+        
+        with SuppressInfeasibleWarning():
+            try:
+                TransformationFactory('gdp.bigm').apply_to(subproblem)
+                fbbt(subproblem, integer_tol=config.integer_tolerance)
+                TransformationFactory('contrib.detect_fixed_vars').apply_to(subproblem)
+                TransformationFactory('contrib.propagate_fixed_vars').apply_to(subproblem)
+                TransformationFactory('contrib.deactivate_trivial_constraints').apply_to(subproblem, tmp=False, ignore_infeasible=False)
+
+            except InfeasibleConstraintException:
+                # config.logger.info(f"Subproblem infeasible for external variable values: {external_var_value}")
+                # self.explored_point_dict[tuple(external_var_value)] = float('inf')
+                return False, float('inf')
+                # return False, None
+
+            # Solve the subproblem
+            minlp_args = dict(config.minlp_solver_args)
+            if config.time_limit is not None and config.minlp_solver == 'gams':
+                elapsed = get_main_elapsed_time(self.timing)
+                remaining = max(config.time_limit - elapsed, 1)
+                minlp_args['add_options'] = minlp_args.get('add_options', [])
+                minlp_args['add_options'].append(f'option reslim={remaining};')
+
+            result = SolverFactory(config.minlp_solver).solve(subproblem, tee=False, **minlp_args)
+
+            # Check the solver's termination condition
+            if result.solver.termination_condition in {tc.optimal, tc.feasible, tc.locallyOptimal}:
+                # subproblem_obj_value = value(subproblem.obj)
+                obj = next(subproblem.component_data_objects(Objective, active=True))
+                subproblem_obj_value = value(obj)
+                # Check if the objective value is valid
+                if subproblem_obj_value is None or subproblem_obj_value != subproblem_obj_value:  # Check for NaN
+                    config.logger.warning(f"Objective value is NaN or None for external variables {external_var_value}.")
+                    subproblem_obj_value = float('nan')
+
+                # Store the result in the cumulative dictionary
+                self.explored_point_dict[tuple(external_var_value)] = subproblem_obj_value
+                # Update the explored set
+                self.explored_point_set.add(tuple(external_var_value))
+
+                # Handle the result and check for primal improvement
+                primal_improved = self._handle_subproblem_result(
+                    result, subproblem, external_var_value, config, search_type
+                )
+                return primal_improved, subproblem_obj_value
+            else:
+                config.logger.warning(f"Solver returned a non-optimal status: {result.solver.termination_condition}")
+                self.explored_point_dict[tuple(external_var_value)] = config.infinity_output # Use the configured value instead of infinity
+                return False, config.infinity_output
     
-                except InfeasibleConstraintException:
-                    config.logger.info(f"Subproblem infeasible for external variable values: {external_var_value}")
-                    self.explored_point_dict[tuple(external_var_value)] = float('inf')
-                    return False, float('inf')
+    # Get external variable information is missing in the previous codes
+    def _get_external_information(self, util_block, config):
+        """Function that obtains information from the model to perform the reformulation with external variables.
 
-                # Solve the subproblem
-                minlp_args = dict(config.minlp_solver_args)
-                if config.time_limit is not None and config.minlp_solver == 'gams':
-                    elapsed = get_main_elapsed_time(self.timing)
-                    remaining = max(config.time_limit - elapsed, 1)
-                    minlp_args['add_options'] = minlp_args.get('add_options', [])
-                    minlp_args['add_options'].append(f'option reslim={remaining};')
+        Parameters
+        ----------
+        util_block : Block
+            The GDPopt utility block of the model.
+        config : ConfigBlock
+            GDPopt configuration block.
 
-                result = SolverFactory(config.minlp_solver).solve(subproblem, tee=False, **minlp_args)
-
-                # Check the solver's termination condition
-                if result.solver.termination_condition in {tc.optimal, tc.feasible, tc.locallyOptimal}:
-                    subproblem_obj_value = value(subproblem.obj)
-
-                    # Check if the objective value is valid
-                    if subproblem_obj_value is None or subproblem_obj_value != subproblem_obj_value:  # Check for NaN
-                        config.logger.warning(f"Objective value is NaN or None for external variables {external_var_value}.")
-                        subproblem_obj_value = float('nan')
-
-                    # Store the result in the cumulative dictionary
-                    self.explored_point_dict[tuple(external_var_value)] = subproblem_obj_value
-
-                    # Handle the result and check for primal improvement
-                    primal_improved = self._handle_subproblem_result(result, subproblem, external_var_value, config, search_type)
-                    return primal_improved, subproblem_obj_value
-                else:
-                    config.logger.warning(f"Solver returned a non-optimal status: {result.solver.termination_condition}")
-                    self.explored_point_dict[tuple(external_var_value)] = config.infinity_output # Use the configured value instead of infinity
-                    return False, config.infinity_output
-        except RuntimeError as e:
-            config.logger.warning(f"RuntimeError encountered for external variables {external_var_value}: {str(e)}")
-            self.explored_point_dict[tuple(external_var_value)] = None
-            return False, None
+        Raises
+        ------
+        ValueError
+            The exactly_number of the exactly constraint is greater than 1.
+        """
+        util_block.external_var_info_list = [] # List of ExternalVarInfo namedtuples for the algorithm
+        model = util_block.parent_block() 
+        reformulation_summary = [] # Summary table for the reformulation for logging and output
+        # Identify the variables that can be reformulated by performing a loop over logical constraints
+        # TODO: we can automatically find all Exactly logical constraints in the model.
+        # However, we cannot link the starting point and the logical constraint.
+        # for c in util_block.logical_constraint_list:
+        #     if isinstance(c.body, ExactlyExpression):
+        if config.logical_constraint_list is not None:
+            for c in util_block.config_logical_constraint_list:
+                if not isinstance(c.body, ExactlyExpression):
+                    raise ValueError(
+                        "The logical_constraint_list config should be a list of ExactlyExpression logical constraints."
+                    )
+                # TODO: in the first version, we don't support more than one exactly constraint.
+                exactly_number = c.body.args[0]
+                if exactly_number > 1:
+                    raise ValueError("The function only works for exactly_number = 1")
+                sorted_boolean_var_list = c.body.args[1:]
+                util_block.external_var_info_list.append(
+                    ExternalVarInfo(
+                        exactly_number=1,
+                        Boolean_vars=sorted_boolean_var_list,
+                        UB=len(sorted_boolean_var_list),
+                        LB=1,
+                    )
+                )
+                reformulation_summary.append(
+                    [
+                        1,
+                        len(sorted_boolean_var_list),
+                        [boolean_var.name for boolean_var in sorted_boolean_var_list],
+                    ]
+                )
+        if config.disjunction_list is not None:
+            for disjunction in util_block.config_disjunction_list:
+                sorted_boolean_var_list = [
+                    disjunct.indicator_var for disjunct in disjunction.disjuncts
+                ]
+                util_block.external_var_info_list.append(
+                    ExternalVarInfo(
+                        exactly_number=1,
+                        Boolean_vars=sorted_boolean_var_list,
+                        UB=len(sorted_boolean_var_list),
+                        LB=1,
+                    )
+                )
+                reformulation_summary.append(
+                    [
+                        1,
+                        len(sorted_boolean_var_list),
+                        [boolean_var.name for boolean_var in sorted_boolean_var_list],
+                    ]
+                )
+        config.logger.info("Reformulation Summary:")
+        config.logger.info(
+            tabulate.tabulate(
+                reformulation_summary,
+                headers=["Ext Var Index", "LB", "UB", "Associated Boolean Vars"],
+                showindex="always",
+                tablefmt="simple_outline",
+            )
+        )
+        self.number_of_external_variables = sum(
+            external_var_info.exactly_number
+            for external_var_info in util_block.external_var_info_list
+        )
+        if self.number_of_external_variables != len(config.starting_point):
+            raise ValueError(
+                "The length of the provided starting point doesn't equal the number of disjunctions."
+            )
 
     def generate_master_problem(self, config):
         # Initialize the master problem as a ConcreteModel
@@ -328,7 +422,7 @@ class GDP_LDBD_Solver(GDP_LDSDA_Solver):
         # Set up the external variables (these are integer variables)
         util_block = self.working_model_util_block
         external_vars = []
-
+        
         # Use initial point to set initial values for external variables in the first iteration
         for i, external_var_info in enumerate(util_block.external_var_info_list):
             var_name = f'external_var_{i}'
@@ -374,16 +468,16 @@ class GDP_LDBD_Solver(GDP_LDSDA_Solver):
         external_var_values = [int(value(var)) for var in self.master_problem.external_vars]
         
         # Retrieve the objective value (z)
-        objective_value = value(self.master_problem.z)
-
+        # Find the (first and usually only) active objective function defined in this subproblem and assign it to the variable obj
+        master_problem_obj = next(self.master_problem.component_data_objects(Objective, active=True))
+        objective_value = value(master_problem_obj)
+        
         # Optionally, print the values for debugging
         print(f"Solved master problem. Objective value (z): {objective_value}")
         print(f"External variables: {external_var_values}")
 
         # Return the values of the external variables and the objective value
         return external_var_values, objective_value
-  
-   
 
     def generate_benders_cuts(self, config):
         # Step 1: Get the current external variable coordinates from the master problem
@@ -479,4 +573,4 @@ class GDP_LDBD_Solver(GDP_LDSDA_Solver):
             self.master_problem.benders_cuts.add(benders_cut_expr <= self.master_problem.z)
 
             # Store the objective value of the subproblem for use in the loop
-            self.current_subproblem_obj_value = value(subproblem_model.objective)
+            self.current_subproblem_obj_value = value(subproblem_model.objective) 
