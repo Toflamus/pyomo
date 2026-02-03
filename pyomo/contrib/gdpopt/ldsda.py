@@ -67,7 +67,7 @@ class GDP_LDSDA_Solver(_GDPoptAlgorithm):
     constraints, as well as logical conditions.
     """
 
-    CONFIG = _GDPoptAlgorithm.CONFIG() # CONFIG = ConfigBlock("GDPopt")
+    CONFIG = _GDPoptAlgorithm.CONFIG()
     _add_mip_solver_configs(CONFIG)
     _add_nlp_solver_configs(CONFIG, default_solver='ipopt')
     _add_nlp_solve_configs(
@@ -91,7 +91,6 @@ class GDP_LDSDA_Solver(_GDPoptAlgorithm):
         https://doi.org/10.1016/B978-0-323-85159-6.50213-X
         """.strip())
 
-    # The core stuff
     def _solve_gdp(self, model, config):
         """Solve the GDP model.
 
@@ -171,22 +170,17 @@ class GDP_LDSDA_Solver(_GDPoptAlgorithm):
             True if the primal bound is improved
         """
         self.fix_disjunctions_with_external_var(external_var_value)
-        # Create the subproblem by cloning the working model for Preparation & Transformation
         subproblem = self.working_model.clone()
         TransformationFactory('core.logical_to_linear').apply_to(subproblem)
-        # Aggressive Preprocessing
+
         with SuppressInfeasibleWarning():
             try:
-                # 1. Big-M Transformation
                 TransformationFactory('gdp.bigm').apply_to(subproblem)
-                # 2. FBBT and fix trivialities
                 fbbt(subproblem, integer_tol=config.integer_tolerance)
-                # 3. Detect and propagate fixed variables that can be fixed with integer variables fixed
                 TransformationFactory('contrib.detect_fixed_vars').apply_to(subproblem)
                 TransformationFactory('contrib.propagate_fixed_vars').apply_to(
                     subproblem
                 )
-                # 4. Deactivate trivial constraints to minimize the size of matrix
                 TransformationFactory(
                     'contrib.deactivate_trivial_constraints'
                 ).apply_to(subproblem, tmp=False, ignore_infeasible=False)
@@ -222,9 +216,9 @@ class GDP_LDSDA_Solver(_GDPoptAlgorithm):
         ValueError
             The exactly_number of the exactly constraint is greater than 1.
         """
-        util_block.external_var_info_list = [] # List of ExternalVarInfo namedtuples for the algorithm
-        model = util_block.parent_block() 
-        reformulation_summary = [] # Summary table for the reformulation for logging and output
+        util_block.external_var_info_list = []
+        model = util_block.parent_block()
+        reformulation_summary = []
         # Identify the variables that can be reformulated by performing a loop over logical constraints
         # TODO: we can automatically find all Exactly logical constraints in the model.
         # However, we cannot link the starting point and the logical constraint.
@@ -340,7 +334,7 @@ class GDP_LDSDA_Solver(_GDPoptAlgorithm):
             return directions
         elif config.direction_norm == 'Linf':
             directions = list(it.product([-1, 0, 1], repeat=dimension))
-            directions.remove((0,) * dimension) # Remove the zero direction
+            directions.remove((0,) * dimension)
             return directions
 
     def _check_valid_neighbor(self, neighbor):
@@ -438,14 +432,11 @@ class GDP_LDSDA_Solver(_GDPoptAlgorithm):
         while primal_improved:
             next_point = tuple(map(sum, zip(self.current_point, self.best_direction)))
             if self._check_valid_neighbor(next_point):
-                # Modification: Add ", _" to decode the tuple, only get the first boolean value
-                primal_improved, _ = self._solve_GDP_subproblem(
+                primal_improved = self._solve_GDP_subproblem(
                     next_point, 'Line search', config
                 )
                 if primal_improved:
                     self.current_point = next_point
-                else:
-                    break
             else:
                 break
 

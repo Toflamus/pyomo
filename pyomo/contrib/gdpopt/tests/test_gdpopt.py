@@ -1,7 +1,7 @@
 #  ___________________________________________________________________________
 #
 #  Pyomo: Python Optimization Modeling Objects
-#  Copyright (c) 2008-2024
+#  Copyright (c) 2008-2025
 #  National Technology and Engineering Solutions of Sandia, LLC
 #  Under the terms of Contract DE-NA0003525 with National Technology and
 #  Engineering Solutions of Sandia, LLC, the U.S. Government retains certain
@@ -246,7 +246,7 @@ class TestGDPoptUnit(unittest.TestCase):
         config.declare('mip_solver_args', ConfigValue({}))
 
         # We tell Gurobi to figure it out
-        (results, termination_condition) = distinguish_mip_infeasible_or_unbounded(
+        results, termination_condition = distinguish_mip_infeasible_or_unbounded(
             m, config
         )
 

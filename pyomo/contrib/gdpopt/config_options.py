@@ -1,7 +1,7 @@
 #  ___________________________________________________________________________
 #
 #  Pyomo: Python Optimization Modeling Objects
-#  Copyright (c) 2008-2024
+#  Copyright (c) 2008-2025
 #  National Technology and Engineering Solutions of Sandia, LLC
 #  Under the terms of Contract DE-NA0003525 with National Technology and
 #  Engineering Solutions of Sandia, LLC, the U.S. Government retains certain
@@ -22,6 +22,9 @@ from pyomo.common.deprecation import deprecation_warning
 from pyomo.contrib.gdpopt.discrete_problem_initialize import valid_init_strategies
 from pyomo.contrib.gdpopt.nlp_initialization import restore_vars_to_original_values
 from pyomo.contrib.gdpopt.util import a_logger, _DoNothing
+from pyomo.util.config_domains import ComponentDataSet
+from pyomo.core.base import LogicalConstraint
+from pyomo.gdp.disjunct import Disjunction
 
 _supported_algorithms = {
     'LOA': ('gdpopt.loa', 'Logic-based Outer Approximation'),
@@ -436,7 +439,7 @@ def _add_mip_solver_configs(CONFIG):
         ConfigValue(
             default="gurobi",
             description="""
-            Mixed-integer linear solver to use. Note that no persisent solvers
+            Mixed-integer linear solver to use. Note that no persistent solvers
             other than the auto-persistent solvers in the APPSI package are
             supported.""",
         ),
@@ -457,7 +460,7 @@ def _add_nlp_solver_configs(CONFIG, default_solver):
         ConfigValue(
             default=default_solver,
             description="""
-            Nonlinear solver to use. Note that no persisent solvers
+            Nonlinear solver to use. Note that no persistent solvers
             other than the auto-persistent solvers in the APPSI package are
             supported.""",
         ),
@@ -475,7 +478,7 @@ def _add_nlp_solver_configs(CONFIG, default_solver):
         ConfigValue(
             default="baron",
             description="""
-            Mixed-integer nonlinear solver to use. Note that no persisent solvers
+            Mixed-integer nonlinear solver to use. Note that no persistent solvers
             other than the auto-persistent solvers in the APPSI package are
             supported.""",
         ),
@@ -493,7 +496,7 @@ def _add_nlp_solver_configs(CONFIG, default_solver):
         ConfigValue(
             default="bonmin",
             description="""
-            Mixed-integer nonlinear solver to use. Note that no persisent solvers
+            Mixed-integer nonlinear solver to use. Note that no persistent solvers
             other than the auto-persistent solvers in the APPSI package are
             supported.""",
         ),
@@ -529,6 +532,7 @@ def _add_tolerance_configs(CONFIG):
         ),
     )
 
+
 def _add_ldsda_configs(CONFIG):
     CONFIG.declare(
         "direction_norm",
@@ -546,17 +550,18 @@ def _add_ldsda_configs(CONFIG):
         "logical_constraint_list",
         ConfigValue(
             default=None,
+            domain=ComponentDataSet(LogicalConstraint),
             description="""
             The list of logical constraints to be reformulated into external variables.
             The logical constraints should be in the same order of provided starting point.
-            The provide logical constraints should be ExactlyExpression.
-            TODO: Maybe we can find a better design for this.""",
+            The provided logical constraints should be ExactlyExpressions.""",
         ),
     )
     CONFIG.declare(
         "disjunction_list",
         ConfigValue(
             default=None,
+            domain=ComponentDataSet(Disjunction),
             description="""
             The list of disjunctions to be reformulated into external variables.
             The disjunctions should be in the same order of provided starting point.
@@ -570,4 +575,3 @@ def _add_ldbd_configs(CONFIG):
         domain=float,
         description="Value to use for infeasible points instead of infinity."
     ))
-    

@@ -1,7 +1,7 @@
 #  ___________________________________________________________________________
 #
 #  Pyomo: Python Optimization Modeling Objects
-#  Copyright (c) 2008-2024
+#  Copyright (c) 2008-2025
 #  National Technology and Engineering Solutions of Sandia, LLC
 #  Under the terms of Contract DE-NA0003525 with National Technology and
 #  Engineering Solutions of Sandia, LLC, the U.S. Government retains certain
@@ -16,7 +16,7 @@ from pyomo.core import value
 from pyomo.opt import TerminationCondition as tc
 
 
-class _OAAlgorithmMixIn(object):
+class _OAAlgorithmMixIn:
     def _fix_discrete_soln_solve_subproblem_and_add_cuts(
         self, discrete_prob_util_block, subprob_util_block, config
     ):

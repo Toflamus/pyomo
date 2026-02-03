@@ -1,7 +1,7 @@
 #  ___________________________________________________________________________
 #
 #  Pyomo: Python Optimization Modeling Objects
-#  Copyright (c) 2008-2024
+#  Copyright (c) 2008-2025
 #  National Technology and Engineering Solutions of Sandia, LLC
 #  Under the terms of Contract DE-NA0003525 with National Technology and
 #  Engineering Solutions of Sandia, LLC, the U.S. Government retains certain
@@ -11,6 +11,7 @@
 
 """This module provides functions for cut generation used across multiple
 algorithms."""
+
 from math import fabs
 from pyomo.common.collections import ComponentSet
 from pyomo.core import TransformationFactory, value, Constraint, Block
