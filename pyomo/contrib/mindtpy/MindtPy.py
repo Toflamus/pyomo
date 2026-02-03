@@ -3,7 +3,7 @@
 #  ___________________________________________________________________________
 #
 #  Pyomo: Python Optimization Modeling Objects
-#  Copyright (c) 2008-2024
+#  Copyright (c) 2008-2025
 #  National Technology and Engineering Solutions of Sandia, LLC
 #  Under the terms of Contract DE-NA0003525 with National Technology and
 #  Engineering Solutions of Sandia, LLC, the U.S. Government retains certain
@@ -70,7 +70,7 @@ from pyomo.contrib.mindtpy.config_options import _supported_algorithms
 @SolverFactory.register(
     'mindtpy', doc='MindtPy: Mixed-Integer Nonlinear Decomposition Toolbox in Pyomo'
 )
-class MindtPySolver(object):
+class MindtPySolver:
     """
     Decomposition solver for Mixed-Integer Nonlinear Programming (MINLP) problems.
 

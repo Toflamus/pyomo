@@ -1,7 +1,7 @@
 #  ___________________________________________________________________________
 #
 #  Pyomo: Python Optimization Modeling Objects
-#  Copyright (c) 2008-2024
+#  Copyright (c) 2008-2025
 #  National Technology and Engineering Solutions of Sandia, LLC
 #  Under the terms of Contract DE-NA0003525 with National Technology and
 #  Engineering Solutions of Sandia, LLC, the U.S. Government retains certain
@@ -588,7 +588,7 @@ class LazyOACallback_cplex(
             dual_values = None
 
         config.logger.info('Solving feasibility problem')
-        (feas_subproblem, feas_subproblem_results) = (
+        feas_subproblem, feas_subproblem_results = (
             mindtpy_solver.solve_feasibility_subproblem()
         )
         # In OA algorithm, OA cuts are generated based on the solution of the subproblem
