@@ -46,16 +46,7 @@ from pyomo.core.base import Var, Constraint, NonNegativeReals, ConstraintList, O
 it, it_available = attempt_import('itertools')
 tabulate, tabulate_available = attempt_import('tabulate')
 
-# Data tuple for external variables.
-ExternalVarInfo = namedtuple(
-    'ExternalVarInfo',
-    [
-        'exactly_number',  # number of external variables for this type
-        'Boolean_vars',  # list with names of the ordered Boolean variables to be reformulated
-        'UB',  # upper bound on external variable
-        'LB',  # lower bound on external variable
-    ],
-)
+
 
 
 @SolverFactory.register(
@@ -267,7 +258,7 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
             The subproblem's objective value (or None if infeasible)
         """
 
-        self.fix_disjunctions_with_external_var(external_var_value)
+        self._fix_disjunctions_with_external_var(external_var_value)
         subproblem = self.working_model.clone()
         TransformationFactory('core.logical_to_linear').apply_to(subproblem)
 
@@ -568,3 +559,70 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
 
             # Store the objective value of the subproblem for use in the loop
             self.current_subproblem_obj_value = value(subproblem_model.objective)
+
+
+class DiscreteDataManager:
+    """
+    Manages the state of the discrete search space using standard built-in types.
+    
+    Storage:
+        point_info: dict[tuple[int, ...], dict[str, object]]
+    """
+    def __init__(self, external_var_info_list=None):
+        # 使用原生 dict 和 tuple 进行标注 (无需 import)
+        self.point_info: dict[tuple[int, ...], dict[str, object]] = {}
+        self.external_var_info_list = external_var_info_list
+
+    def set_external_info(self, external_var_info_list):
+        """Initialize with the bounds/structure of the external variables."""
+        self.external_var_info_list = external_var_info_list
+
+    def add(self, point: tuple[int, ...], feasible: bool, objective: float, 
+            source: str, iteration_found: int):
+        """
+        Register a visited point.
+        """
+        self.point_info[point] = {
+            "feasible": feasible,
+            "objective": objective,
+            "source": source,
+            "iteration_found": iteration_found
+        }
+
+    def is_visited(self, point: tuple[int, ...]) -> bool:
+        return point in self.point_info
+
+    def get_info(self, point: tuple[int, ...]) -> dict[str, object] | None:
+        return self.point_info.get(point)
+
+    def get_cached_value(self, point: tuple[int, ...]) -> float | None:
+        info = self.point_info.get(point)
+        if info:
+            return info["objective"]
+        return None
+
+    def is_valid_point(self, point: tuple[int, ...]) -> bool:
+        if not self.external_var_info_list:
+            return True
+            
+        return all(
+            info.LB <= val <= info.UB
+            for val, info in zip(point, self.external_var_info_list)
+        )
+    
+    def get_best_solution(self) -> tuple[tuple[int, ...] | None, float | None]:
+        """
+        Returns (best_point, best_objective) or (None, None).
+        """
+        # 筛选出 feasible 为 True 的点
+        feasible_candidates = {
+            pt: data["objective"] 
+            for pt, data in self.point_info.items() 
+            if data["feasible"]
+        }
+
+        if not feasible_candidates:
+            return None, None
+
+        best_point = min(feasible_candidates, key=feasible_candidates.get)
+        return best_point, feasible_candidates[best_point]
