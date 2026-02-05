@@ -33,55 +33,6 @@ from pyomo.common.dependencies import attempt_import
 
 from pyomo.common.collections import ComponentMap
 
-class DiscreteDataManager:
-    """
-    Manages the state of the discrete search space, including tracking
-    visited points, caching solutions, and validating bounds.
-    """
-    def __init__(self, external_var_info_list=None):
-        self._explored_points = set()
-        self._solution_cache = {} # Future-proofing: map point -> obj_value
-        self.external_var_info_list = external_var_info_list
-
-    def set_external_info(self, external_var_info_list):
-        """Initialize with the bounds/structure of the external variables."""
-        self.external_var_info_list = external_var_info_list
-
-    def add(self, point, obj_value=None):
-        """Mark a point as visited."""
-        self._explored_points.add(point)
-        if obj_value is not None:
-            self._solution_cache[point] = obj_value
-
-    def is_visited(self, point):
-        """Check if a point has already been explored."""
-        return point in self._explored_points
-
-    def get_cached_value(self, point):
-        """Retrieve a stored objective value for a point (if supported)."""
-        return self._solution_cache.get(point)
-
-    def is_valid_point(self, point):
-        """
-        Check if a point is within the bounds defined by ExternalVarInfo.
-        """
-        if not self.external_var_info_list:
-            return True # No bounds checking if info not provided
-            
-        return all(
-            info.LB <= val <= info.UB
-            for val, info in zip(point, self.external_var_info_list)
-        )
-    
-    def get_best_solution(self):
-        """Retrieve the best cached solution found so far."""
-        if not self._solution_cache:
-            return None, None
-        best_point = min(self._solution_cache, key=self._solution_cache.get)
-        return best_point, self._solution_cache[best_point]
-
-
-
 # tabulate, tabulate_available = attempt_import('tabulate')
 # Data tuple for external variables.
 ExternalVarInfo = namedtuple(
@@ -127,51 +78,7 @@ class _GDPoptDiscreteAlgorithm(_GDPoptAlgorithm):
 
     def __init__(self, **kwds):
         super().__init__(**kwds)
-        self.data_manager = DiscreteDataManager()
-
-    def _initialize_discrete_model(self, model, config):
-        """
-        Standard setup: Creates utility blocks, clones the model, 
-        and parses external variables.
-        """
-        # 1. Create utility block on the original model
-        self.original_util_block = add_util_block(model)
-        add_disjunct_list(self.original_util_block)
-        add_algebraic_variable_list(self.original_util_block)
-        add_boolean_variable_lists(self.original_util_block)
         
-        self.original_util_block.config_disjunction_list = config.disjunction_list
-        self.original_util_block.config_logical_constraint_list = config.logical_constraint_list
-
-        # 2. Clone to create the working model
-        self.working_model = model.clone()
-        self.working_model_util_block = self.working_model.find_component(self.original_util_block.name)
-
-        # 3. Setup the working model structure
-        add_disjunction_list(self.working_model_util_block)
-        TransformationFactory('core.logical_to_linear').apply_to(self.working_model)
-        add_transformed_boolean_variable_list(self.working_model_util_block)
-
-        # 4. Extract external info and populate DataManager
-        # This ensures self.working_model_util_block.external_var_info_list is populated
-        self._get_external_information(self.working_model_util_block, config)
-        
-        # 5. Initialize generic tracking variables
-        self.initial_point = tuple(config.starting_point)
-        if hasattr(self, 'data_manager'):
-            # If you implemented the DataManager from the previous step
-            self.data_manager.set_external_info(self.working_model_util_block.external_var_info_list)
-
-        # Add BigM suffix if missing
-        if not hasattr(self.working_model_util_block, 'BigM'):
-            self.working_model_util_block.BigM = Suffix()
-
-    def _solve_gdp(self, model, config):
-        # 1. CALL THE BASE CLASS SETUP
-        # This handles all the complexity of blocks, lists, and cloning.
-        self._initialize_discrete_model(model, config)
-        pass
-
     def _get_external_information(self, util_block, config):
         """
         Extract information from the model to perform the reformulation with external variables.
