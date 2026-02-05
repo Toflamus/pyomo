@@ -133,82 +133,136 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
         _ = self._solve_discrete_point(self.current_point, 'Initial point', config)
 
         # Main LDBD Loop
+        pass
+
+
+
 
     def _build_master(self, config):
-            """Construct the LD-BD master problem.
+        """Construct the LD-BD master problem.
 
-            The LD-BD master problem is an epigraph MILP over the *external*
-            integer variables.
+        The LD-BD master problem is an epigraph MILP over the *external* integer
+        variables.
 
-            Master variables
-            ----------------
-            - ``e[i]``: integer external variables (one per external decision),
-                with bounds taken from ``self.data_manager.external_var_info_list``.
-            - ``z``: continuous epigraph variable representing the master objective.
+        Master variables
+        ----------------
+        - ``e[i]``: integer external variables (one per external decision), with
+          bounds taken from ``self.data_manager.external_var_info_list``.
+        - ``z``: continuous epigraph variable representing the master objective.
 
-            Master constraints
-            ------------------
-            - ``refined_cuts``: a ``ConstraintList`` that will hold the *refined*
-                LD-BD cuts (one cut per anchor point). Each cut has the form
-                ``z >= <p, e> + alpha`` where ``(p, alpha)`` comes from the separation
-                LP solved during the "Refine All" step.
+        Master constraints
+        ------------------
+        - ``refined_cuts``: a ``ConstraintList`` holding refined cuts, one per
+          anchor point.
 
-            Side effects
-            ------------
-            - Sets ``self.master`` to the constructed Pyomo model.
-            - Initializes the persistent cut registry:
-                - ``self._cut_indices``: ``dict[tuple[int, ...], int]`` mapping anchor
-                    points to indices in ``self.master.refined_cuts``.
-                - ``self._anchors``: ``list[tuple[int, ...]]`` recording the anchor
-                    points in a deterministic order.
+        Side effects
+        ------------
+        - Sets ``self.master``.
+        - Initializes ``self._cut_indices`` and ``self._anchors``.
 
-            Notes
-            -----
-            This function *only* constructs the master; it does not solve it and
-            does not add any cuts.
+        Notes
+        -----
+        This function only constructs the master; it does not solve it.
 
-            Doctest-style example
-            ---------------------
-            >>> from pyomo.contrib.gdpopt.ldbd import GDP_LDBD_Solver
-            >>> from pyomo.contrib.gdpopt.discrete_algorithm_base_class import ExternalVarInfo
-            >>> s = GDP_LDBD_Solver()
-            >>> s.data_manager.set_external_info([ExternalVarInfo(1, [], 3, 1)])
-            >>> m = s._build_master(s.config)
-            >>> (int(m.e[0].lb), int(m.e[0].ub))
-            (1, 3)
-            """
-            _ = config  # reserved for future use (e.g., logging / solver options)
+        Doctest-style example
+        ---------------------
+        >>> from pyomo.contrib.gdpopt.ldbd import GDP_LDBD_Solver
+        >>> from pyomo.contrib.gdpopt.discrete_algorithm_base_class import ExternalVarInfo
+        >>> s = GDP_LDBD_Solver()
+        >>> s.data_manager.set_external_info([ExternalVarInfo(1, [], 3, 1)])
+        >>> m = s._build_master(s.config)
+        >>> (int(m.e[0].lb), int(m.e[0].ub))
+        (1, 3)
+        """
+        _ = config  # reserved for future use (e.g., logging / solver options)
 
-            # Defensive: allow construction even before external info is set.
-            external_info = getattr(self.data_manager, 'external_var_info_list', None)
-            if not external_info:
-                    external_info = []
+        # Defensive: allow construction even before external info is set.
+        external_info = getattr(self.data_manager, 'external_var_info_list', None)
+        if not external_info:
+            external_info = []
 
-            master = ConcreteModel(name='GDPopt_LDBD_Master')
+        master = ConcreteModel(name='GDPopt_LDBD_Master')
 
-            # Create one integer external variable per external decision.
-            # We use a 0-based index for internal convenience; external decisions
-            # themselves are still 1-based in the Boolean fixing logic.
-            n_ext = len(external_info)
-            master.e = Var(
-                    range(n_ext),
-                    domain=Integers,
-                    bounds=lambda m, i: (external_info[i].LB, external_info[i].UB),
+        # Create one integer external variable per external decision.
+        # We use a 0-based index for internal convenience; external decisions
+        # themselves are still 1-based in the Boolean fixing logic.
+        n_ext = len(external_info)
+        master.e = Var(
+            range(n_ext),
+            domain=Integers,
+            bounds=lambda m, i: (external_info[i].LB, external_info[i].UB),
+        )
+
+        # Epigraph variable for the master objective.
+        master.z = Var(domain=Reals)
+        master.obj = Objective(expr=master.z, sense=minimize)
+
+        # Container for refined LD-BD cuts (updated in-place via registry).
+        master.refined_cuts = ConstraintList()
+
+        # Store master + initialize registries used by the refinement logic.
+        self.master = master
+        self._cut_indices = {}
+        self._anchors = []
+
+        return master
+
+    def _solve_master(self, config):
+        """Solve the LD-BD master MILP.
+
+        Implements Step 5 in Algorithm \ref{alg:main_ldbd} (Master Problem
+        Solution):
+
+            (z_LB, e^k) = argmin z
+                           s.t. z >= beta_anchor(e)  for all anchors
+                                e in E
+
+        Parameters
+        ----------
+        config : ConfigBlock
+            GDPopt configuration block. Uses ``config.mip_solver`` and
+            ``config.mip_solver_args``.
+
+        Returns
+        -------
+        (lb_value, next_point)
+            - lb_value: float
+            - next_point: tuple[int, ...]
+        """
+        master = getattr(self, 'master', None)
+        if master is None:
+            raise RuntimeError("Master model has not been built.")
+
+        mip_args = dict(getattr(config, 'mip_solver_args', {}))
+        if config.time_limit is not None and getattr(config, 'mip_solver', None) == 'gams':
+            elapsed = get_main_elapsed_time(self.timing)
+            remaining = max(config.time_limit - elapsed, 1)
+            mip_args['add_options'] = mip_args.get('add_options', [])
+            mip_args['add_options'].append('option reslim=%s;' % remaining)
+
+        result = SolverFactory(config.mip_solver).solve(master, **mip_args)
+        term_cond = result.solver.termination_condition
+        if term_cond not in {
+            tc.optimal,
+            tc.feasible,
+            tc.globallyOptimal,
+            tc.locallyOptimal,
+            tc.maxTimeLimit,
+            tc.maxIterations,
+            tc.maxEvaluations,
+        }:
+            config.logger.debug(
+                "Master MILP did not converge: %s", term_cond
             )
+            return None, None
 
-            # Epigraph variable for the master objective.
-            master.z = Var(domain=Reals)
-            master.obj = Objective(expr=master.z, sense=minimize)
-
-            # Container for refined LD-BD cuts (updated in-place via registry).
-            master.refined_cuts = ConstraintList()
-
-            # Store master + initialize registries used by the refinement logic.
-            self.master = master
-            self._cut_indices = {}
-            self._anchors = []
-
-            return master
+        z_lb = value(master.z)
+        self.LB = z_lb
+        next_point = tuple(int(round(value(master.e[i]))) for i in master.e)
+        return z_lb, next_point
+    
+    
+    
 
     def _solve_GDP_subproblem(self, external_var_value, search_type, config):
         """Solve the GDP subproblem with disjunctions fixed by external variables.
