@@ -118,14 +118,6 @@ class _GDPoptDiscreteAlgorithm(_GDPoptAlgorithm):
     """
 
     # 1. Define the Common Configuration here
-    CONFIG = _GDPoptAlgorithm.CONFIG()
-    _add_mip_solver_configs(CONFIG)
-    _add_nlp_solver_configs(CONFIG, default_solver='ipopt')
-    _add_nlp_solve_configs(
-        CONFIG, default_nlp_init_method=restore_vars_to_original_values
-    )
-    _add_tolerance_configs(CONFIG)
-    
     # What you should do in the child class:
     # # class GDP_LDSDA_Solver(_GDPoptDiscreteAlgorithm):
     # #   # 1. Extend the Base CONFIG with LDSDA-specific options
