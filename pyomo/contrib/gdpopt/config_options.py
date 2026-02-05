@@ -611,3 +611,20 @@ def _add_ldbd_configs(CONFIG):
                 description="Value to use for infeasible points instead of infinity."
             ),
     )
+
+    CONFIG.declare(
+        "separation_solver",
+        ConfigValue(
+            default="gurobi",
+            description=(
+                "LP solver to use for the LD-BD cut refinement (separation LP)."
+            ),
+        ),
+    )
+    CONFIG.declare(
+        "separation_solver_args",
+        ConfigBlock(
+            description="Keyword arguments for the separation LP solver.",
+            implicit=True,
+        ),
+    )

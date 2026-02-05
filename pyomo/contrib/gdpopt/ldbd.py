@@ -98,13 +98,7 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
         )
         
         self.current_point = tuple(config.starting_point)
-        self.explored_point_set = set()
-        self.explored_point_dict = {}
-
-        # Debugging: Print or log the initial current point, explored set, and explored dictionary
-        print(f"Initial current point: {self.current_point}")
-        print(f"Initial explored point set: {self.explored_point_set}")
-        print(f"Initial explored point dictionary: {self.explored_point_dict}")
+        logger.debug("Initial current point: %s", self.current_point)
 
         # Create utility block on the original model so that we will be able to
         # copy solutions between
@@ -135,76 +129,69 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
             self.working_model_util_block.BigM = Suffix()
         self._log_header(logger)
         # Step 1
-        # Solve the initial point
-        _ = self._solve_GDP_subproblem(self.current_point, 'Initial point', config)
+        # Solve/register the initial point
+        _ = self._solve_discrete_point(self.current_point, 'Initial point', config)
 
         # Main LDBD Loop
+
+    def _solve_GDP_subproblem(self, external_var_value, search_type, config):
+        """Solve the GDP subproblem with disjunctions fixed by external variables.
+
+        This is the discrete-point evaluation hook used by the discrete base
+        class via `_solve_discrete_point`.
+
+        Returns
+        -------
+        (primal_improved, primal_bound)
+            primal_bound is a float objective value when solvable, or None when
+            the subproblem is infeasible or fails.
+        """
+        # Fix working model Booleans (and associated binaries) to match the
+        # proposed external point
+        self._fix_disjunctions_with_external_var(external_var_value)
+
+        subproblem = self.working_model.clone()
+        TransformationFactory('core.logical_to_linear').apply_to(subproblem)
+
+        with SuppressInfeasibleWarning():
+            try:
+                # Transform GDP -> algebraic model
+                TransformationFactory('gdp.bigm').apply_to(subproblem)
+
+                # Optional presolve pipeline (kept consistent with config)
+                if getattr(config, 'subproblem_presolve', True):
+                    fbbt(subproblem, integer_tol=config.integer_tolerance)
+                    TransformationFactory('contrib.detect_fixed_vars').apply_to(
+                        subproblem
+                    )
+                    TransformationFactory(
+                        'contrib.propagate_fixed_vars'
+                    ).apply_to(subproblem)
+                    TransformationFactory(
+                        'contrib.deactivate_trivial_constraints'
+                    ).apply_to(subproblem, tmp=False, ignore_infeasible=False)
+            except InfeasibleConstraintException:
+                return False, None
+
+            minlp_args = dict(config.minlp_solver_args)
+            if config.time_limit is not None and config.minlp_solver == 'gams':
+                elapsed = get_main_elapsed_time(self.timing)
+                remaining = max(config.time_limit - elapsed, 1)
+                minlp_args['add_options'] = minlp_args.get('add_options', [])
+                minlp_args['add_options'].append('option reslim=%s;' % remaining)
+
+            result = SolverFactory(config.minlp_solver).solve(subproblem, **minlp_args)
+
+            obj = next(subproblem.component_data_objects(Objective, active=True))
+            primal_bound = value(obj)
+
+            primal_improved = self._handle_subproblem_result(
+                result,
+                subproblem,
+                external_var_value,
+                config,
+                search_type,
+            )
+
+        return primal_improved, primal_bound
         
-    
-
-
-class DiscreteDataManager:
-    """
-    Manages the state of the discrete search space using standard built-in types.
-    
-    Storage:
-        point_info: dict[tuple[int, ...], dict[str, object]]
-    """
-    def __init__(self, external_var_info_list=None):
-        # 使用原生 dict 和 tuple 进行标注 (无需 import)
-        self.point_info: dict[tuple[int, ...], dict[str, object]] = {}
-        self.external_var_info_list = external_var_info_list
-
-    def set_external_info(self, external_var_info_list):
-        """Initialize with the bounds/structure of the external variables."""
-        self.external_var_info_list = external_var_info_list
-
-    def add(self, point: tuple[int, ...], feasible: bool, objective: float, 
-            source: str, iteration_found: int):
-        """
-        Register a visited point.
-        """
-        self.point_info[point] = {
-            "feasible": feasible,
-            "objective": objective,
-            "source": source,
-            "iteration_found": iteration_found
-        }
-
-    def is_visited(self, point: tuple[int, ...]) -> bool:
-        return point in self.point_info
-
-    def get_info(self, point: tuple[int, ...]) -> dict[str, object] | None:
-        return self.point_info.get(point)
-
-    def get_cached_value(self, point: tuple[int, ...]) -> float | None:
-        info = self.point_info.get(point)
-        if info:
-            return info["objective"]
-        return None
-
-    def is_valid_point(self, point: tuple[int, ...]) -> bool:
-        if not self.external_var_info_list:
-            return True
-            
-        return all(
-            info.LB <= val <= info.UB
-            for val, info in zip(point, self.external_var_info_list)
-        )
-    
-    def get_best_solution(self) -> tuple[tuple[int, ...] | None, float | None]:
-        """
-        Returns (best_point, best_objective) or (None, None).
-        """
-        # 筛选出 feasible 为 True 的点
-        feasible_candidates = {
-            pt: data["objective"] 
-            for pt, data in self.point_info.items() 
-            if data["feasible"]
-        }
-
-        if not feasible_candidates:
-            return None, None
-
-        best_point = min(feasible_candidates, key=feasible_candidates.get)
-        return best_point, feasible_candidates[best_point]
