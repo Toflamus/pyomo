@@ -15,7 +15,7 @@ from pyomo.common.config import document_kwargs_from_configdict, ConfigValue
 from pyomo.common.errors import InfeasibleConstraintException
 from pyomo.contrib.fbbt.fbbt import fbbt
 from pyomo.contrib.gdpopt.algorithm_base_class import _GDPoptAlgorithm
-from pyomo.contrib.gdpopt.ldsda import GDP_LDSDA_Solver
+from pyomo.contrib.gdpopt.discrete_algorithm_base_class import _GDPoptDiscreteAlgorithm
 from pyomo.contrib.gdpopt.create_oa_subproblems import (
     add_util_block,
     add_disjunction_list,
@@ -26,7 +26,7 @@ from pyomo.contrib.gdpopt.create_oa_subproblems import (
 )
 from pyomo.contrib.gdpopt.config_options import (
     _add_nlp_solver_configs,
-    _add_ldsda_configs,
+    _add_ldbd_configs,
     _add_mip_solver_configs,
     _add_tolerance_configs,
     _add_nlp_solve_configs,
@@ -63,7 +63,7 @@ ExternalVarInfo = namedtuple(
     doc="The LD-BD (Logic-based Discrete Benders Decomposition solver)"
     "Generalized Disjunctive Programming (GDP) solver",
 )
-class GDP_LDBD_Solver(GDP_LDSDA_Solver):
+class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
     """The GDPopt (Generalized Disjunctive Programming optimizer)
     LD-BD (Logic-based Discrete Benders Decomposition (LD-BD)) solver.
 
@@ -78,13 +78,7 @@ class GDP_LDBD_Solver(GDP_LDSDA_Solver):
         CONFIG, default_nlp_init_method=restore_vars_to_original_values
     )
     _add_tolerance_configs(CONFIG)
-    _add_ldsda_configs(CONFIG)
-
-    CONFIG.declare('infinity_output', ConfigValue(
-        default=1e8,
-        domain=float,
-        description="Value to use for infeasible points instead of infinity."
-    ))
+    _add_ldbd_configs(CONFIG)
 
     algorithm = 'LDBD'
 
@@ -573,4 +567,4 @@ class GDP_LDBD_Solver(GDP_LDSDA_Solver):
             self.master_problem.benders_cuts.add(benders_cut_expr <= self.master_problem.z)
 
             # Store the objective value of the subproblem for use in the loop
-            self.current_subproblem_obj_value = value(subproblem_model.objective) 
+            self.current_subproblem_obj_value = value(subproblem_model.objective)

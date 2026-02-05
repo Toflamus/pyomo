@@ -570,8 +570,44 @@ def _add_ldsda_configs(CONFIG):
     )
 
 def _add_ldbd_configs(CONFIG):
-    CONFIG.declare('infinity_output', ConfigValue(
-        default=1e8,
-        domain=float,
-        description="Value to use for infeasible points instead of infinity."
-    ))
+    CONFIG.declare(
+        "direction_norm",
+        ConfigValue(
+            default='L2',
+            domain=In(['L2', 'Linf']),
+            description="The norm to use for the search direction",
+        ),
+    )
+    CONFIG.declare(
+        "starting_point",
+        ConfigValue(default=None, description="The value list of external variables."),
+    )
+    CONFIG.declare(
+        "logical_constraint_list",
+        ConfigValue(
+            default=None,
+            domain=ComponentDataSet(LogicalConstraint),
+            description="""
+            The list of logical constraints to be reformulated into external variables.
+            The logical constraints should be in the same order of provided starting point.
+            The provided logical constraints should be ExactlyExpressions.""",
+        ),
+    )
+    CONFIG.declare(
+        "disjunction_list",
+        ConfigValue(
+            default=None,
+            domain=ComponentDataSet(Disjunction),
+            description="""
+            The list of disjunctions to be reformulated into external variables.
+            The disjunctions should be in the same order of provided starting point.
+            """,
+        ),
+    )
+    CONFIG.declare('infinity_output', 
+            ConfigValue(
+                default=1e8,
+                domain=float,
+                description="Value to use for infeasible points instead of infinity."
+            ),
+    )
