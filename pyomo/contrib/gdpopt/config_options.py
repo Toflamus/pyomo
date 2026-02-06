@@ -113,7 +113,7 @@ def _add_nlp_solve_configs(CONFIG, default_nlp_init_method):
     # subproblems.
     CONFIG.declare(
         "integer_tolerance",
-        ConfigValue(default=1e-5, description="Tolerance on integral values."),
+        ConfigValue(default=1e-6, description="Tolerance on integral values."),
     )
     CONFIG.declare(
         "constraint_tolerance",

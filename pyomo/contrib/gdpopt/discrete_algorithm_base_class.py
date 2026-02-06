@@ -212,9 +212,6 @@ class _GDPoptDiscreteAlgorithm(_GDPoptAlgorithm):
                     ]
                 )
 
-        # Set the external variable information in the data manager
-        self.data_manager.set_external_info(util_block.external_var_info_list)
-
         if config.disjunction_list is not None:
             for disjunction in util_block.config_disjunction_list:
                 sorted_boolean_var_list = [
@@ -235,6 +232,10 @@ class _GDPoptDiscreteAlgorithm(_GDPoptAlgorithm):
                         [boolean_var.name for boolean_var in sorted_boolean_var_list],
                     ]
                 )
+
+        # Set the external variable information in the data manager (after we
+        # have collected all sources of external variables).
+        self.data_manager.set_external_info(util_block.external_var_info_list)
         config.logger.info("Reformulation Summary:")
         config.logger.info(
             # tabulate.tabulate(
@@ -319,6 +320,67 @@ class _GDPoptDiscreteAlgorithm(_GDPoptAlgorithm):
         )
 
         return primal_improved, objective
+
+    def _solve_GDP_subproblem(self, external_var_value, search_type, config):
+        """Solve the GDP subproblem with disjunctions fixed by external variables.
+
+        This is the discrete-point evaluation hook used by the discrete base
+        class via `_solve_discrete_point`.
+
+        Returns
+        -------
+        (primal_improved, primal_bound)
+            primal_bound is a float objective value when solvable, or None when
+            the subproblem is infeasible or fails.
+        """
+        # Fix working model Booleans (and associated binaries) to match the
+        # proposed external point
+        self._fix_disjunctions_with_external_var(external_var_value)
+
+        subproblem = self.working_model.clone()
+        TransformationFactory('core.logical_to_linear').apply_to(subproblem)
+
+        with SuppressInfeasibleWarning():
+            try:
+                # Transform GDP -> algebraic model
+                TransformationFactory('gdp.bigm').apply_to(subproblem)
+
+                # Optional presolve pipeline (kept consistent with config)
+                if getattr(config, 'subproblem_presolve', True):
+                    fbbt(subproblem, integer_tol=config.integer_tolerance)
+                    TransformationFactory('contrib.detect_fixed_vars').apply_to(
+                        subproblem
+                    )
+                    TransformationFactory(
+                        'contrib.propagate_fixed_vars'
+                    ).apply_to(subproblem)
+                    TransformationFactory(
+                        'contrib.deactivate_trivial_constraints'
+                    ).apply_to(subproblem, tmp=False, ignore_infeasible=False)
+            except InfeasibleConstraintException:
+                return False, None
+
+            minlp_args = dict(config.minlp_solver_args)
+            if config.time_limit is not None and config.minlp_solver == 'gams':
+                elapsed = get_main_elapsed_time(self.timing)
+                remaining = max(config.time_limit - elapsed, 1)
+                minlp_args['add_options'] = minlp_args.get('add_options', [])
+                minlp_args['add_options'].append('option reslim=%s;' % remaining)
+
+            result = SolverFactory(config.minlp_solver).solve(subproblem, **minlp_args)
+
+            obj = next(subproblem.component_data_objects(Objective, active=True))
+            primal_bound = value(obj)
+
+            primal_improved = self._handle_subproblem_result(
+                result,
+                subproblem,
+                external_var_value,
+                config,
+                search_type,
+            )
+
+        return primal_improved, primal_bound
 
     def _get_directions(self, dimension, config):
         """
