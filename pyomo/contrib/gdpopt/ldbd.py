@@ -211,9 +211,8 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
                 logger.info('Anchor path: %s', ' -> '.join(map(str, self._anchors)))
                 self.pyomo_results.solver.termination_condition = tc.optimal
                 break
-
+            
             # if self.any_termination_criterion_met(config):
-            #     # print("Termination criterion met.")
             #     break
 
 
