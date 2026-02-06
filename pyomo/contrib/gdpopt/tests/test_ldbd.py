@@ -13,16 +13,25 @@ from pyomo.contrib.gdpopt.discrete_algorithm_base_class import ExternalVarInfo
 from pyomo.core.base import ConstraintList
 from pyomo.opt import TerminationCondition as tc
 
-from pyomo.environ import SolverFactory, value, Var, Constraint, TransformationFactory, ConcreteModel, Objective
+from pyomo.environ import (
+    SolverFactory,
+    value,
+    Var,
+    Constraint,
+    TransformationFactory,
+    ConcreteModel,
+    Objective,
+)
 from pyomo.contrib.gdpopt.tests.four_stage_dynamic_model import build_model
 from pyomo.gdp import Disjunct, Disjunction
+
 
 class TestGDPoptLDBD(unittest.TestCase):
     """Real unit tests for GDPopt"""
 
     @unittest.skipUnless(
-        SolverFactory('gams').available(False)
-        and SolverFactory('gams').license_is_valid(),
+        SolverFactory("gams").available(False)
+        and SolverFactory("gams").license_is_valid(),
         "gams solver not available",
     )
     def test_solve_four_stage_dynamic_model(self):
@@ -30,8 +39,8 @@ class TestGDPoptLDBD(unittest.TestCase):
         model = build_model(mode_transfer=True)
 
         # Discretize the model using dae.collocation
-        discretizer = TransformationFactory('dae.collocation')
-        discretizer.apply_to(model, nfe=10, ncp=3, scheme='LAGRANGE-RADAU')
+        discretizer = TransformationFactory("dae.collocation")
+        discretizer.apply_to(model, nfe=10, ncp=3, scheme="LAGRANGE-RADAU")
         # We need to reconstruct the constraints in disjuncts after discretization.
         # This is a bug in Pyomo.dae. https://github.com/Pyomo/pyomo/issues/3101
         for disjunct in model.component_data_objects(ctype=Disjunct):
@@ -40,16 +49,16 @@ class TestGDPoptLDBD(unittest.TestCase):
                 constraint.construct()
 
         for dxdt in model.component_data_objects(ctype=Var, descend_into=True):
-            if 'dxdt' in dxdt.name:
+            if "dxdt" in dxdt.name:
                 dxdt.setlb(-300)
                 dxdt.setub(300)
 
-        for direction_norm in ['L2', 'Linf']:
-            result = SolverFactory('gdpopt.ldbd').solve(
+        for direction_norm in ["L2", "Linf"]:
+            result = SolverFactory("gdpopt.ldbd").solve(
                 model,
                 direction_norm=direction_norm,
-                minlp_solver='gams',
-                minlp_solver_args=dict(solver='ipopth'),
+                minlp_solver="gams",
+                minlp_solver_args=dict(solver="ipopth"),
                 starting_point=[1, 2],
                 logical_constraint_list=[
                     model.mode_transfer_lc1,
@@ -59,8 +68,9 @@ class TestGDPoptLDBD(unittest.TestCase):
             )
             self.assertAlmostEqual(value(model.obj), -23.305325, places=4)
 
+
 class TestGDPoptLDBDUnit(unittest.TestCase):
-           
+
     def test_build_master_creates_vars_and_registry(self):
         s = GDP_LDBD_Solver()
 
@@ -87,8 +97,8 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
         self.assertEqual(m.e[1].ub, 10)
 
         # Epigraph objective variable and objective exist
-        self.assertTrue(hasattr(m, 'z'))
-        self.assertTrue(hasattr(m, 'obj'))
+        self.assertTrue(hasattr(m, "z"))
+        self.assertTrue(hasattr(m, "obj"))
 
         # Refined cuts container exists
         self.assertIsInstance(m.refined_cuts, ConstraintList)
@@ -103,18 +113,20 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
     def test_solve_master_extracts_point_and_lb(self):
         s = GDP_LDBD_Solver()
         # Setup data manager with external variable info
-        s.data_manager.set_external_info([
-            ExternalVarInfo(1, [], 3, 1),
-            ExternalVarInfo(1, [], 10, 2),
-        ])
-        
+        s.data_manager.set_external_info(
+            [
+                ExternalVarInfo(1, [], 3, 1),
+                ExternalVarInfo(1, [], 10, 2),
+            ]
+        )
+
         # Build the master model
         m = s._build_master(s.config)
         m.refined_cuts.add(m.z >= m.e[0] + 2 * m.e[1] + 1)
 
         # Create the MagicMock for the solver
         mock_solver = mock.MagicMock()
-        
+
         # Define what happens when solver.solve() is called
         def side_effect(model, **kwargs):
             model.e[0].value = 1
@@ -128,7 +140,9 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
         mock_solver.solve.side_effect = side_effect
 
         # Patch SolverFactory to return our mock_solver
-        with mock.patch('pyomo.contrib.gdpopt.ldbd.SolverFactory', return_value=mock_solver):
+        with mock.patch(
+            "pyomo.contrib.gdpopt.ldbd.SolverFactory", return_value=mock_solver
+        ):
             z_lb, pt = s._solve_master(s.config)
 
         # Assertions
@@ -136,13 +150,12 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
         self.assertEqual(pt, (1, 2))
         mock_solver.solve.assert_called_once()
 
-    
         # Test that _solve_master raises RuntimeError if _build_master hasn't been called.
         s = GDP_LDBD_Solver()
-    
+
         # Ensure the internal reference to the master model is None
         # (Usually this is the default state, but we set it explicitly for the test)
-        s._master_model = None 
+        s._master_model = None
 
         # Verify that the specific RuntimeError is raised
         with pytest.raises(RuntimeError, match="Master model has not been built."):
@@ -152,7 +165,7 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
         """Unittest for _solve_master when the solver returns infeasible."""
         s = GDP_LDBD_Solver()
         s.data_manager.set_external_info([ExternalVarInfo(1, [], 1, 0)])
-        s._build_master(s.config) # make sure master is built
+        s._build_master(s.config)  # make sure master is built
 
         mock_solver = mock.MagicMock()
         # simulate infeasible result
@@ -160,49 +173,55 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
         results.solver.termination_condition = tc.infeasible
         mock_solver.solve.return_value = results
 
-        with mock.patch('pyomo.contrib.gdpopt.ldbd.SolverFactory', return_value=mock_solver):
+        with mock.patch(
+            "pyomo.contrib.gdpopt.ldbd.SolverFactory", return_value=mock_solver
+        ):
             z_lb, pt = s._solve_master(s.config)
 
         self.assertIsNone(z_lb)
         self.assertIsNone(pt)
-
 
     def test_solve_master_gams_time_limit_expired(self):
         """Unittest for _solve_master when GAMS time limit is expired."""
         s = GDP_LDBD_Solver()
         s.data_manager.set_external_info([ExternalVarInfo(1, [], 1, 0)])
         s._build_master(s.config)
-        
-        s.config.mip_solver = 'gams'
+
+        s.config.mip_solver = "gams"
         s.config.time_limit = 100
-        mock_elapsed = 120.0 # over the limit
+        mock_elapsed = 120.0  # over the limit
 
         # Ensure the solver has a timing container
-        if not hasattr(s, 'timing'):
+        if not hasattr(s, "timing"):
             s.timing = {}
 
         mock_solver = mock.MagicMock()
         # define what happens when solver.solve() is called
-        
+
         def mock_solve_call(model, **kwargs):
             model.z.value = 100.0  # give z a fake value
             for i in model.e:
-                model.e[i].value = 0 # give e vars fake values
+                model.e[i].value = 0  # give e vars fake values
             results = mock.MagicMock()
             results.solver.termination_condition = tc.optimal
             return results
+
         mock_solver.solve.side_effect = mock_solve_call
         results = mock.MagicMock()
         results.solver.termination_condition = tc.optimal
         mock_solver.solve.return_value = results
 
-        with mock.patch('pyomo.contrib.gdpopt.ldbd.get_main_elapsed_time', return_value=mock_elapsed), mock.patch('pyomo.contrib.gdpopt.ldbd.SolverFactory', return_value=mock_solver):
-            
+        with mock.patch(
+            "pyomo.contrib.gdpopt.ldbd.get_main_elapsed_time", return_value=mock_elapsed
+        ), mock.patch(
+            "pyomo.contrib.gdpopt.ldbd.SolverFactory", return_value=mock_solver
+        ):
+
             s._solve_master(s.config)
-            
+
             # make sure reslim is set to 1
             args, kwargs = mock_solver.solve.call_args
-            self.assertIn('option reslim=1;', kwargs['add_options'])
+            self.assertIn("option reslim=1;", kwargs["add_options"])
 
     def test_neighbor_search_feasible_anchor_evaluates_linf_neighborhood(self):
         s = GDP_LDBD_Solver()
@@ -213,7 +232,7 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
             ]
         )
         s.number_of_external_variables = 2
-        s.config.direction_norm = 'Linf'
+        s.config.direction_norm = "Linf"
         anchor = (2, 2)
 
         calls = []
@@ -225,18 +244,23 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
 
         solve_point_mock.side_effect = _solve_side_effect
 
-        with mock.patch.object(s, '_solve_discrete_point', solve_point_mock):
+        with mock.patch.object(s, "_solve_discrete_point", solve_point_mock):
             is_feasible = s.neighbor_search(anchor, s.config)
 
         self.assertTrue(is_feasible)
-        self.assertIn((anchor, 'Anchor'), calls)
+        self.assertIn((anchor, "Anchor"), calls)
 
-        neighbor_calls = [pt for (pt, typ) in calls if typ == 'Neighbor']
+        neighbor_calls = [pt for (pt, typ) in calls if typ == "Neighbor"]
         self.assertEqual(len(neighbor_calls), 8)
         expected_neighbors = {
-            (1, 1), (1, 2), (1, 3),
-            (2, 1), (2, 3),
-            (3, 1), (3, 2), (3, 3),
+            (1, 1),
+            (1, 2),
+            (1, 3),
+            (2, 1),
+            (2, 3),
+            (3, 1),
+            (3, 2),
+            (3, 3),
         }
         self.assertEqual(set(neighbor_calls), expected_neighbors)
 
@@ -249,7 +273,7 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
             ]
         )
         s.number_of_external_variables = 2
-        s.config.direction_norm = 'Linf'
+        s.config.direction_norm = "Linf"
         anchor = (2, 2)
 
         calls = []
@@ -261,19 +285,29 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
 
         solve_point_mock.side_effect = _solve_side_effect
 
-        with mock.patch.object(s, '_solve_discrete_point', solve_point_mock):
+        with mock.patch.object(s, "_solve_discrete_point", solve_point_mock):
             is_feasible = s.neighbor_search(anchor, s.config)
 
         self.assertFalse(is_feasible)
-        self.assertEqual(calls, [(anchor, 'Anchor')])
+        self.assertEqual(calls, [(anchor, "Anchor")])
 
     def test_solve_separation_lp_builds_and_solves_lp(self):
         s = GDP_LDBD_Solver()
         s.number_of_external_variables = 2
         # Populate D^k with a few points (including an infeasible penalty point)
-        s.data_manager.add((1, 1), feasible=True, objective=10.0, source='t', iteration_found=0)
-        s.data_manager.add((2, 2), feasible=True, objective=8.0, source='t', iteration_found=0)
-        s.data_manager.add((3, 3), feasible=False, objective=s.config.infinity_output, source='t', iteration_found=0)
+        s.data_manager.add(
+            (1, 1), feasible=True, objective=10.0, source="t", iteration_found=0
+        )
+        s.data_manager.add(
+            (2, 2), feasible=True, objective=8.0, source="t", iteration_found=0
+        )
+        s.data_manager.add(
+            (3, 3),
+            feasible=False,
+            objective=s.config.infinity_output,
+            source="t",
+            iteration_found=0,
+        )
 
         anchor = (2, 2)
 
@@ -290,7 +324,9 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
 
         mock_solver.solve.side_effect = solve_side_effect
 
-        with mock.patch('pyomo.contrib.gdpopt.ldbd.SolverFactory', return_value=mock_solver):
+        with mock.patch(
+            "pyomo.contrib.gdpopt.ldbd.SolverFactory", return_value=mock_solver
+        ):
             p_vals, alpha_val = s._solve_separation_lp(anchor, s.config)
 
         self.assertEqual(p_vals, (1.25, -0.5))
@@ -313,8 +349,16 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
 
         # Populate evaluated points (D^k). refine_cuts no longer infers anchors
         # from these keys, but _solve_separation_lp would use them if not mocked.
-        s.data_manager.add((1, 1), feasible=True, objective=10.0, source='t', iteration_found=0)
-        s.data_manager.add((2, 2), feasible=False, objective=s.config.infinity_output, source='t', iteration_found=0)
+        s.data_manager.add(
+            (1, 1), feasible=True, objective=10.0, source="t", iteration_found=0
+        )
+        s.data_manager.add(
+            (2, 2),
+            feasible=False,
+            objective=s.config.infinity_output,
+            source="t",
+            iteration_found=0,
+        )
 
         # First refinement: add cuts
         def sep_lp_first(anchor, config):
@@ -323,7 +367,7 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
             return (0.0, 1.0), 1.0
 
         sep_mock = mock.MagicMock(side_effect=sep_lp_first)
-        with mock.patch.object(s, '_solve_separation_lp', sep_mock):
+        with mock.patch.object(s, "_solve_separation_lp", sep_mock):
             s.refine_cuts(s.config)
 
         self.assertEqual(len(master.refined_cuts), 2)
@@ -337,7 +381,7 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
             return (0.0, 2.0), -2.0
 
         sep_mock = mock.MagicMock(side_effect=sep_lp_second)
-        with mock.patch.object(s, '_solve_separation_lp', sep_mock):
+        with mock.patch.object(s, "_solve_separation_lp", sep_mock):
             s.refine_cuts(s.config)
 
         # Cuts should still be 2, but updated in-place
@@ -357,7 +401,7 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
         s = GDP_LDBD_Solver()
         s.config.starting_point = (1,)
         s.config.disjunction_list = [m.disj]
-        s.config.direction_norm = 'Linf'
+        s.config.direction_norm = "Linf"
 
         # _solve_gdp is usually invoked through solver.solve(), which sets up
         # the main timing context. This unit test calls _solve_gdp directly, so
@@ -371,7 +415,7 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
         s.pyomo_results.solver.termination_condition = None
 
         # Disable termination checks so the loop runs until the explicit UB-LB check
-        with mock.patch.object(s, 'any_termination_criterion_met', return_value=False):
+        with mock.patch.object(s, "any_termination_criterion_met", return_value=False):
             # Fake initial point evaluation: register as feasible with objective 5
             solve_point_mock = mock.MagicMock()
 
@@ -395,7 +439,7 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
                     tuple(anchor_point),
                     feasible=True,
                     objective=5.0,
-                    source='Anchor',
+                    source="Anchor",
                     iteration_found=0,
                 )
                 return True
@@ -417,7 +461,9 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
             # Fake bound update to avoid dependence on objective sense
             update_bounds_mock = mock.MagicMock()
 
-            def update_bounds_side_effect(search_type, primal=None, dual=None, logger=None, current_point=None):
+            def update_bounds_side_effect(
+                search_type, primal=None, dual=None, logger=None, current_point=None
+            ):
                 if primal is not None:
                     s.UB = float(primal)
                 if dual is not None:
@@ -428,17 +474,19 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
 
             with ExitStack() as stack:
                 stack.enter_context(
-                    mock.patch.object(s, '_solve_discrete_point', solve_point_mock)
+                    mock.patch.object(s, "_solve_discrete_point", solve_point_mock)
                 )
                 stack.enter_context(
-                    mock.patch.object(s, 'neighbor_search', neighbor_search_mock)
+                    mock.patch.object(s, "neighbor_search", neighbor_search_mock)
                 )
-                stack.enter_context(mock.patch.object(s, 'refine_cuts', fake_refine))
+                stack.enter_context(mock.patch.object(s, "refine_cuts", fake_refine))
                 stack.enter_context(
-                    mock.patch.object(s, '_solve_master', solve_master_mock)
+                    mock.patch.object(s, "_solve_master", solve_master_mock)
                 )
                 stack.enter_context(
-                    mock.patch.object(s, '_update_bounds_after_solve', update_bounds_mock)
+                    mock.patch.object(
+                        s, "_update_bounds_after_solve", update_bounds_mock
+                    )
                 )
 
                 s._solve_gdp(m, s.config)
@@ -448,5 +496,5 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
         self.assertTrue(fake_refine.called)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

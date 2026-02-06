@@ -39,18 +39,25 @@ from pyomo.opt import SolverFactory
 from pyomo.opt import TerminationCondition as tc
 from pyomo.core.expr.logical_expr import ExactlyExpression
 from pyomo.common.dependencies import attempt_import
-from pyomo.core.base import Var, Constraint, NonNegativeReals, ConstraintList, Objective, Reals, value, ConcreteModel, NonNegativeIntegers, Integers
+from pyomo.core.base import (
+    Var,
+    Constraint,
+    NonNegativeReals,
+    ConstraintList,
+    Objective,
+    Reals,
+    value,
+    ConcreteModel,
+    NonNegativeIntegers,
+    Integers,
+)
 
-
-
-it, it_available = attempt_import('itertools')
-tabulate, tabulate_available = attempt_import('tabulate')
-
-
+it, it_available = attempt_import("itertools")
+tabulate, tabulate_available = attempt_import("tabulate")
 
 
 @SolverFactory.register(
-    'gdpopt.ldbd',
+    "gdpopt.ldbd",
     doc="The LD-BD (Logic-based Discrete Benders Decomposition solver)"
     "Generalized Disjunctive Programming (GDP) solver",
 )
@@ -64,14 +71,14 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
 
     CONFIG = _GDPoptAlgorithm.CONFIG()
     _add_mip_solver_configs(CONFIG)
-    _add_nlp_solver_configs(CONFIG, default_solver='ipopt')
+    _add_nlp_solver_configs(CONFIG, default_solver="ipopt")
     _add_nlp_solve_configs(
         CONFIG, default_nlp_init_method=restore_vars_to_original_values
     )
     _add_tolerance_configs(CONFIG)
     _add_ldbd_configs(CONFIG)
 
-    algorithm = 'LDBD'
+    algorithm = "LDBD"
 
     # Override solve() to customize the docstring for this solver
     @document_kwargs_from_configdict(CONFIG, doc=_GDPoptAlgorithm.solve.__doc__)
@@ -94,9 +101,9 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
         """
         logger = config.logger
         self.log_formatter = (
-            '{:>9}   {:>15}   {:>20}   {:>11.5f}   {:>11.5f}   {:>8.2%}   {:>7.2f}  {}'
+            "{:>9}   {:>15}   {:>20}   {:>11.5f}   {:>11.5f}   {:>8.2%}   {:>7.2f}  {}"
         )
-        
+
         self.current_point = tuple(config.starting_point)
         logger.debug("Initial current point: %s", self.current_point)
 
@@ -111,11 +118,11 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
         util_block.config_logical_constraint_list = config.logical_constraint_list
         # We will use the working_model to perform the LDBD search.
         self.working_model = model.clone()
-        
+
         self.working_model_util_block = self.working_model.find_component(util_block)
 
         add_disjunction_list(self.working_model_util_block)
-        TransformationFactory('core.logical_to_linear').apply_to(self.working_model)
+        TransformationFactory("core.logical_to_linear").apply_to(self.working_model)
         # Now that logical_to_disjunctive has been called.
         add_transformed_boolean_variable_list(self.working_model_util_block)
         self._get_external_information(self.working_model_util_block, config)
@@ -125,12 +132,12 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
 
         # Add the BigM suffix if it does not already exist. Used later during
         # nonlinear constraint activation.
-        if not hasattr(self.working_model_util_block, 'BigM'):
+        if not hasattr(self.working_model_util_block, "BigM"):
             self.working_model_util_block.BigM = Suffix()
         self._log_header(logger)
         # Step 1
         # Solve/register the initial point
-        _ = self._solve_discrete_point(self.current_point, 'Initial point', config)
+        _ = self._solve_discrete_point(self.current_point, "Initial point", config)
 
         # Build the master (Step 5 model) once we know the external variable
         # structure.
@@ -145,7 +152,7 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
         while True:
             # Termination check (time / iteration / bounds)
             if self.any_termination_criterion_met(config):
-                logger.info('Anchor path: %s', ' -> '.join(map(str, self._path)))
+                logger.info("Anchor path: %s", " -> ".join(map(str, self._path)))
                 break
 
             self.iteration += 1
@@ -166,13 +173,15 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
                 break
 
             # Always log the master solution in the standard table format.
-            self._log_current_state(logger, 'Master', tuple(next_point), primal_improved=False)
-            
+            self._log_current_state(
+                logger, "Master", tuple(next_point), primal_improved=False
+            )
+
             # Update upper bound from the best feasible point seen so far.
             best_point, best_obj = self.data_manager.get_best_solution()
             if best_obj is not None:
                 self._update_bounds_after_solve(
-                    'UB update',
+                    "UB update",
                     primal=best_obj,
                     logger=logger,
                     current_point=best_point,
@@ -183,22 +192,27 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
             if tuple(next_point) in self._anchors:
                 best_anchor, best_anchor_obj = self.data_manager.get_best_solution()
                 if best_anchor is not None and best_anchor_obj is not None:
-                    next_point_obj = self.data_manager.get_info(tuple(next_point)).get('objective', None)
+                    next_point_obj = self.data_manager.get_info(tuple(next_point)).get(
+                        "objective", None
+                    )
                     if next_point_obj is not None and next_point_obj < best_anchor_obj:
                         self.current_point = tuple(best_anchor)
-          
+
             self.current_point = tuple(next_point)
             # Update the path with the new current point (even if it is a repeat).
             self._path.append(self.current_point)
             # Register next trial point as an anchor for refinement in the next
             # iteration.
             info = self.data_manager.get_info(self.current_point)
-            if info is not None and info.get('source', None) != 'Anchor':
+            if info is not None and info.get("source", None) != "Anchor":
                 # Promote a previously explored neighbor point to an anchor.
                 # Also log using the standard discrete-algorithm tabular format.
-                info['source'] = 'Anchor (promoted)'
+                info["source"] = "Anchor (promoted)"
                 self._log_current_state(
-                    logger, 'Anchor (promoted)', self.current_point, primal_improved=False
+                    logger,
+                    "Anchor (promoted)",
+                    self.current_point,
+                    primal_improved=False,
                 )
 
             if self.current_point not in self._anchors:
@@ -206,15 +220,18 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
 
             # Explicit termination check from ldbd.tex (redundant with
             # bounds_converged for minimization, but kept by request).
-            if self.UB < float('inf') and self.LB > float('-inf') and abs(self.UB - self.LB) <= config.bound_tolerance:
+            if (
+                self.UB < float("inf")
+                and self.LB > float("-inf")
+                and abs(self.UB - self.LB) <= config.bound_tolerance
+            ):
                 logger.info("LDBD bounds converged: UB=%s, LB=%s", self.UB, self.LB)
-                logger.info('Anchor path: %s', ' -> '.join(map(str, self._anchors)))
+                logger.info("Anchor path: %s", " -> ".join(map(str, self._anchors)))
                 self.pyomo_results.solver.termination_condition = tc.optimal
                 break
-            
+
             # if self.any_termination_criterion_met(config):
             #     break
-
 
     def _build_master(self, config):
         """Construct the LD-BD master problem.
@@ -255,11 +272,11 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
         _ = config  # reserved for future use (e.g., logging / solver options)
 
         # Defensive: allow construction even before external info is set.
-        external_info = getattr(self.data_manager, 'external_var_info_list', None)
+        external_info = getattr(self.data_manager, "external_var_info_list", None)
         if not external_info:
             external_info = []
 
-        master = ConcreteModel(name='GDPopt_LDBD_Master')
+        master = ConcreteModel(name="GDPopt_LDBD_Master")
 
         # Create one integer external variable per external decision.
         # We use a 0-based index for internal convenience; external decisions
@@ -307,16 +324,19 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
             - lb_value: float
             - next_point: tuple[int, ...]
         """
-        master = getattr(self, 'master', None)
+        master = getattr(self, "master", None)
         if master is None:
             raise RuntimeError("Master model has not been built.")
 
-        mip_args = dict(getattr(config, 'mip_solver_args', {}))
-        if config.time_limit is not None and getattr(config, 'mip_solver', None) == 'gams':
+        mip_args = dict(getattr(config, "mip_solver_args", {}))
+        if (
+            config.time_limit is not None
+            and getattr(config, "mip_solver", None) == "gams"
+        ):
             elapsed = get_main_elapsed_time(self.timing)
             remaining = max(config.time_limit - elapsed, 1)
-            mip_args['add_options'] = mip_args.get('add_options', [])
-            mip_args['add_options'].append('option reslim=%s;' % remaining)
+            mip_args["add_options"] = mip_args.get("add_options", [])
+            mip_args["add_options"].append("option reslim=%s;" % remaining)
 
         result = SolverFactory(config.mip_solver).solve(master, **mip_args)
         term_cond = result.solver.termination_condition
@@ -329,9 +349,7 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
             tc.maxIterations,
             tc.maxEvaluations,
         }:
-            config.logger.debug(
-                "Master MILP did not converge: %s", term_cond
-            )
+            config.logger.debug("Master MILP did not converge: %s", term_cond)
             return None, None
 
         z_lb = value(master.z)
@@ -368,12 +386,12 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
         anchor_point = tuple(anchor_point)
 
         # Evaluate/register anchor point (center of the neighborhood)
-        _, anchor_obj = self._solve_discrete_point(anchor_point, 'Anchor', config)
+        _, anchor_obj = self._solve_discrete_point(anchor_point, "Anchor", config)
         anchor_feasible = anchor_obj < config.infinity_output
         if not anchor_feasible:
             return False
 
-        directions = getattr(self, 'directions', None)
+        directions = getattr(self, "directions", None)
         if directions is None:
             directions = self._get_directions(self.number_of_external_variables, config)
 
@@ -381,8 +399,8 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
             neighbor = tuple(map(sum, zip(anchor_point, direction)))
             if not self.data_manager.is_valid_point(neighbor):
                 continue
-            self._solve_discrete_point(neighbor, 'Neighbor', config)
-        
+            self._solve_discrete_point(neighbor, "Neighbor", config)
+
         return True
 
     def _solve_separation_lp(self, anchor_point, config):
@@ -405,18 +423,18 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
         master_dim = self.number_of_external_variables
 
         # D^k is represented by all visited points in the data manager.
-        point_info = getattr(self.data_manager, 'point_info', None)
+        point_info = getattr(self.data_manager, "point_info", None)
         if not point_info:
             return None, None
 
-        sep = ConcreteModel(name='GDPopt_LDBD_SeparationLP')
+        sep = ConcreteModel(name="GDPopt_LDBD_SeparationLP")
         sep.p = Var(range(master_dim), domain=Reals)
         sep.alpha = Var(domain=Reals)
         sep.cuts = ConstraintList()
 
         for pt, info in point_info.items():
             pt = tuple(pt)
-            rhs = float(info.get('objective'))
+            rhs = float(info.get("objective"))
             sep.cuts.add(
                 sum(sep.p[i] * pt[i] for i in range(master_dim)) + sep.alpha <= rhs
             )
@@ -426,12 +444,15 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
             sense=maximize,
         )
 
-        lp_args = dict(getattr(config, 'separation_solver_args', {}))
-        if config.time_limit is not None and getattr(config, 'separation_solver', None) == 'gams':
+        lp_args = dict(getattr(config, "separation_solver_args", {}))
+        if (
+            config.time_limit is not None
+            and getattr(config, "separation_solver", None) == "gams"
+        ):
             elapsed = get_main_elapsed_time(self.timing)
             remaining = max(config.time_limit - elapsed, 1)
-            lp_args['add_options'] = lp_args.get('add_options', [])
-            lp_args['add_options'].append('option reslim=%s;' % remaining)
+            lp_args["add_options"] = lp_args.get("add_options", [])
+            lp_args["add_options"].append("option reslim=%s;" % remaining)
 
         result = SolverFactory(config.separation_solver).solve(sep, **lp_args)
         term_cond = result.solver.termination_condition
@@ -445,7 +466,7 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
             tc.maxEvaluations,
         }:
             config.logger.debug(
-                'Separation LP did not converge for anchor %s: %s',
+                "Separation LP did not converge for anchor %s: %s",
                 anchor_point,
                 term_cond,
             )
@@ -461,14 +482,14 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
         Per ldbd.tex, we solve a separation LP for each anchor point and add / update
         the corresponding refined cut in the master problem.
         """
-        master = getattr(self, 'master', None)
+        master = getattr(self, "master", None)
         if master is None:
-            raise RuntimeError('Master model has not been built.')
+            raise RuntimeError("Master model has not been built.")
 
         # Only refine cuts for the trial-point anchors (initial point and
         # subsequent master-proposed points). Separation constraints still use
         # all evaluated points in D^k (via _solve_separation_lp).
-        anchors = list(getattr(self, '_anchors', []) or [])
+        anchors = list(getattr(self, "_anchors", []) or [])
 
         for anchor in anchors:
             anchor = tuple(anchor)
@@ -492,7 +513,9 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
             if p_vals is None:
                 continue
 
-            expr = master.z >= sum(p_vals[i] * master.e[i] for i in master.e) + alpha_val
+            expr = (
+                master.z >= sum(p_vals[i] * master.e[i] for i in master.e) + alpha_val
+            )
 
             if anchor in self._cut_indices:
                 cut_idx = self._cut_indices[anchor]
@@ -501,10 +524,6 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
                 cut_obj = master.refined_cuts.add(expr)
                 cut_idx = cut_obj.index()
                 self._cut_indices[anchor] = cut_idx
-    
-    def any_termination_criterion_met(self, config):
-        return (self.reached_iteration_limit(config)
-                or self.reached_time_limit(config))
-        
 
-    
+    def any_termination_criterion_met(self, config):
+        return self.reached_iteration_limit(config) or self.reached_time_limit(config)
