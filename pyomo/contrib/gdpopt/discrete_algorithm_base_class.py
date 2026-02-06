@@ -282,8 +282,18 @@ class _GDPoptDiscreteAlgorithm(_GDPoptAlgorithm):
         # 1. Check if already visited (optional, depending on algorithm logic)
         # Some algos might re-evaluate, but usually we skip.
         if self.data_manager.is_visited(point):
-            config.logger.info(f"Skipping already visited point: {point}")
-            return False, self.data_manager.get_cached_value(point)
+            cached_obj = self.data_manager.get_cached_value(point)
+            if config.logger is not None and hasattr(self, 'log_formatter'):
+                try:
+                    self._log_current_state(
+                        config.logger,
+                        f"Skipped {search_type}",
+                        point,
+                        primal_improved=False,
+                    )
+                except Exception:
+                    pass
+            return False, cached_obj
 
         # 2. Fix the model to this point
         self._fix_disjunctions_with_external_var(point)

@@ -526,7 +526,7 @@ def _add_tolerance_configs(CONFIG):
     CONFIG.declare(
         "bound_tolerance",
         ConfigValue(
-            default=1e-6,
+            default=1e-7,
             domain=NonNegativeFloat,
             description="Tolerance for bound convergence.",
         ),

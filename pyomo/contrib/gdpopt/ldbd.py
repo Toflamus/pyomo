@@ -140,28 +140,18 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
         # initial point). Per ldbd.tex, cuts are refined for these anchors using
         # all evaluated points in D^k as separation constraints.
         self._anchors = [tuple(self.current_point)]
-
+        self._path = [tuple(self.current_point)]
         # Main LDBD Loop
         while True:
             # Termination check (time / iteration / bounds)
             if self.any_termination_criterion_met(config):
-                logger.info('Anchor path: %s', ' -> '.join(map(str, self._anchors)))
+                logger.info('Anchor path: %s', ' -> '.join(map(str, self._path)))
                 break
 
             self.iteration += 1
 
             # Step 3: subproblem evaluation & neighborhood search
             self.neighbor_search(self.current_point, config)
-
-            # Update upper bound from the best feasible point seen so far.
-            best_point, best_obj = self.data_manager.get_best_solution()
-            if best_obj is not None:
-                self._update_bounds_after_solve(
-                    'UB update',
-                    primal=best_obj,
-                    logger=logger,
-                    current_point=best_point,
-                )
 
             # Step 4: cut generation and refinement (refine-all)
             self.refine_cuts(config)
@@ -178,8 +168,28 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
             # Always log the master solution in the standard table format.
             self._log_current_state(logger, 'Master', tuple(next_point), primal_improved=False)
             
-            self.current_point = tuple(next_point)
+            # Update upper bound from the best feasible point seen so far.
+            best_point, best_obj = self.data_manager.get_best_solution()
+            if best_obj is not None:
+                self._update_bounds_after_solve(
+                    'UB update',
+                    primal=best_obj,
+                    logger=logger,
+                    current_point=best_point,
+                )
 
+            # Step Five: Loop break in the paper. If the solution of the master problem is the same as one of the previously evaluated points, then we need to update the current point with the best solution from anchors
+
+            if tuple(next_point) in self._anchors:
+                best_anchor, best_anchor_obj = self.data_manager.get_best_solution()
+                if best_anchor is not None and best_anchor_obj is not None:
+                    next_point_obj = self.data_manager.get_info(tuple(next_point)).get('objective', None)
+                    if next_point_obj is not None and next_point_obj < best_anchor_obj:
+                        self.current_point = tuple(best_anchor)
+          
+            self.current_point = tuple(next_point)
+            # Update the path with the new current point (even if it is a repeat).
+            self._path.append(self.current_point)
             # Register next trial point as an anchor for refinement in the next
             # iteration.
             info = self.data_manager.get_info(self.current_point)
@@ -205,8 +215,6 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
             # if self.any_termination_criterion_met(config):
             #     # print("Termination criterion met.")
             #     break
-
-
 
 
     def _build_master(self, config):
@@ -330,7 +338,10 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
         z_lb = value(master.z)
         # Update the dual bound using the base bound logic (monotone in the
         # correct direction for the objective sense).
-        self._update_bounds(dual=z_lb)
+        # In the LD-BD case, the master objective is a lower bound on the
+        # original minimization objective.
+        # We cannot garantee that the master objective improves monotonically as we refine cuts,
+        self._update_bounds(dual=z_lb, force_update=True)
         next_point = tuple(int(round(value(master.e[i]))) for i in master.e)
         return z_lb, next_point
 
@@ -461,6 +472,23 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
         anchors = list(getattr(self, '_anchors', []) or [])
 
         for anchor in anchors:
+            anchor = tuple(anchor)
+
+            # Only generate/refine cuts for *feasible* anchors.
+            # (Infeasible trial points may still appear in the anchor path/logs,
+            # but they should not be used as anchors for cut generation.)
+            # info = self.data_manager.get_info(anchor)
+            # if info is None:
+            #     continue
+            # if not bool(info.get('feasible', False)):
+            #     continue
+            # try:
+            #     if float(info.get('objective', float('inf'))) >= config.infinity_output:
+            #         continue
+            # except Exception:
+            #     # If objective is missing or non-numeric, be conservative.
+            #     continue
+
             p_vals, alpha_val = self._solve_separation_lp(anchor, config)
             if p_vals is None:
                 continue
@@ -475,7 +503,9 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
                 cut_idx = cut_obj.index()
                 self._cut_indices[anchor] = cut_idx
     
-
-    
+    def any_termination_criterion_met(self, config):
+        return (self.reached_iteration_limit(config)
+                or self.reached_time_limit(config))
         
 
+    

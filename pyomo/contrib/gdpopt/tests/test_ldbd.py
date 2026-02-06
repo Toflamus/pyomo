@@ -13,12 +13,53 @@ from pyomo.contrib.gdpopt.discrete_algorithm_base_class import ExternalVarInfo
 from pyomo.core.base import ConstraintList
 from pyomo.opt import TerminationCondition as tc
 
-from pyomo.environ import ConcreteModel, Var, Objective, Constraint
+from pyomo.environ import SolverFactory, value, Var, Constraint, TransformationFactory, ConcreteModel, Objective
+from pyomo.contrib.gdpopt.tests.four_stage_dynamic_model import build_model
 from pyomo.gdp import Disjunct, Disjunction
 
-
-
 class TestGDPoptLDBD(unittest.TestCase):
+    """Real unit tests for GDPopt"""
+
+    @unittest.skipUnless(
+        SolverFactory('gams').available(False)
+        and SolverFactory('gams').license_is_valid(),
+        "gams solver not available",
+    )
+    def test_solve_four_stage_dynamic_model(self):
+
+        model = build_model(mode_transfer=True)
+
+        # Discretize the model using dae.collocation
+        discretizer = TransformationFactory('dae.collocation')
+        discretizer.apply_to(model, nfe=10, ncp=3, scheme='LAGRANGE-RADAU')
+        # We need to reconstruct the constraints in disjuncts after discretization.
+        # This is a bug in Pyomo.dae. https://github.com/Pyomo/pyomo/issues/3101
+        for disjunct in model.component_data_objects(ctype=Disjunct):
+            for constraint in disjunct.component_objects(ctype=Constraint):
+                constraint._constructed = False
+                constraint.construct()
+
+        for dxdt in model.component_data_objects(ctype=Var, descend_into=True):
+            if 'dxdt' in dxdt.name:
+                dxdt.setlb(-300)
+                dxdt.setub(300)
+
+        for direction_norm in ['L2', 'Linf']:
+            result = SolverFactory('gdpopt.ldbd').solve(
+                model,
+                direction_norm=direction_norm,
+                minlp_solver='gams',
+                minlp_solver_args=dict(solver='ipopth'),
+                starting_point=[1, 2],
+                logical_constraint_list=[
+                    model.mode_transfer_lc1,
+                    model.mode_transfer_lc2,
+                ],
+                time_limit=100,
+            )
+            self.assertAlmostEqual(value(model.obj), -23.305325, places=4)
+
+class TestGDPoptLDBDUnit(unittest.TestCase):
            
     def test_build_master_creates_vars_and_registry(self):
         s = GDP_LDBD_Solver()
@@ -267,13 +308,13 @@ class TestGDPoptLDBD(unittest.TestCase):
         s.number_of_external_variables = 2
         master = s._build_master(s.config)
 
-        # Two trial-point anchors
+        # Two trial-point anchors (one infeasible should be skipped)
         s._anchors = [(1, 1), (2, 2)]
 
         # Populate evaluated points (D^k). refine_cuts no longer infers anchors
         # from these keys, but _solve_separation_lp would use them if not mocked.
         s.data_manager.add((1, 1), feasible=True, objective=10.0, source='t', iteration_found=0)
-        s.data_manager.add((2, 2), feasible=True, objective=8.0, source='t', iteration_found=0)
+        s.data_manager.add((2, 2), feasible=False, objective=s.config.infinity_output, source='t', iteration_found=0)
 
         # First refinement: add cuts
         def sep_lp_first(anchor, config):
@@ -317,6 +358,11 @@ class TestGDPoptLDBD(unittest.TestCase):
         s.config.starting_point = (1,)
         s.config.disjunction_list = [m.disj]
         s.config.direction_norm = 'Linf'
+
+        # _solve_gdp is usually invoked through solver.solve(), which sets up
+        # the main timing context. This unit test calls _solve_gdp directly, so
+        # initialize the timer start to keep tabular logging functional.
+        s.timing.main_timer_start_time = 0.0
 
         # _solve_gdp is normally called via solver.solve(), which prepares
         # pyomo_results. Stub it so the explicit termination assignment works.
