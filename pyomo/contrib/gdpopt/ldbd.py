@@ -155,6 +155,18 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
                 logger.info("Anchor path: %s", " -> ".join(map(str, self._path)))
                 break
 
+            # Explicit termination check from ldbd.tex (redundant with
+            # bounds_converged for minimization, but kept by request).
+            if (
+                self.UB < float("inf")
+                and self.LB > float("-inf")
+                and abs(self.UB - self.LB) <= config.bound_tolerance
+            ):
+                logger.info("LDBD bounds converged: UB=%s, LB=%s", self.UB, self.LB)
+                logger.info("Anchor path: %s", " -> ".join(map(str, self._anchors)))
+                self.pyomo_results.solver.termination_condition = tc.optimal
+                break
+
             self.iteration += 1
 
             # Step 3: subproblem evaluation & neighborhood search
@@ -218,20 +230,6 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
             if self.current_point not in self._anchors:
                 self._anchors.append(self.current_point)
 
-            # Explicit termination check from ldbd.tex (redundant with
-            # bounds_converged for minimization, but kept by request).
-            if (
-                self.UB < float("inf")
-                and self.LB > float("-inf")
-                and abs(self.UB - self.LB) <= config.bound_tolerance
-            ):
-                logger.info("LDBD bounds converged: UB=%s, LB=%s", self.UB, self.LB)
-                logger.info("Anchor path: %s", " -> ".join(map(str, self._anchors)))
-                self.pyomo_results.solver.termination_condition = tc.optimal
-                break
-
-            # if self.any_termination_criterion_met(config):
-            #     break
 
     def _build_master(self, config):
         """Construct the LD-BD master problem.
@@ -483,8 +481,6 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
         the corresponding refined cut in the master problem.
         """
         master = getattr(self, "master", None)
-        if master is None:
-            raise RuntimeError("Master model has not been built.")
 
         # Only refine cuts for the trial-point anchors (initial point and
         # subsequent master-proposed points). Separation constraints still use

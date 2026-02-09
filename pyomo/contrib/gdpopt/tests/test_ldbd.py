@@ -4,6 +4,7 @@ These tests focus on solver infrastructure pieces that do not require an
 external solver (e.g., master model construction).
 """
 
+import logging
 import pytest
 import pyomo.common.unittest as unittest
 from unittest import mock
@@ -11,7 +12,7 @@ from contextlib import ExitStack
 from pyomo.contrib.gdpopt.ldbd import GDP_LDBD_Solver
 from pyomo.contrib.gdpopt.discrete_algorithm_base_class import ExternalVarInfo
 from pyomo.core.base import ConstraintList
-from pyomo.opt import TerminationCondition as tc
+from unittest.mock import MagicMock, patch
 
 from pyomo.environ import (
     SolverFactory,
@@ -24,14 +25,19 @@ from pyomo.environ import (
 )
 from pyomo.contrib.gdpopt.tests.four_stage_dynamic_model import build_model
 from pyomo.gdp import Disjunct, Disjunction
+from pyomo.opt import TerminationCondition
 
 
 class TestGDPoptLDBD(unittest.TestCase):
     """Real unit tests for GDPopt"""
 
     @unittest.skipUnless(
-        SolverFactory("gams").available(False)
-        and SolverFactory("gams").license_is_valid(),
+        all(
+            (
+                SolverFactory("gams").available(False),
+                SolverFactory("gams").license_is_valid(),
+            )
+        ),
         "gams solver not available",
     )
     def test_solve_four_stage_dynamic_model(self):
@@ -70,6 +76,8 @@ class TestGDPoptLDBD(unittest.TestCase):
 
 
 class TestGDPoptLDBDUnit(unittest.TestCase):
+
+
 
     def test_build_master_creates_vars_and_registry(self):
         s = GDP_LDBD_Solver()
@@ -134,7 +142,7 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
             model.z.value = 123.0
             # Return a mock results object with the correct termination condition
             results = mock.MagicMock()
-            results.solver.termination_condition = tc.optimal
+            results.solver.termination_condition = TerminationCondition.optimal
             return results
 
         mock_solver.solve.side_effect = side_effect
@@ -170,7 +178,7 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
         mock_solver = mock.MagicMock()
         # simulate infeasible result
         results = mock.MagicMock()
-        results.solver.termination_condition = tc.infeasible
+        results.solver.termination_condition = TerminationCondition.infeasible
         mock_solver.solve.return_value = results
 
         with mock.patch(
@@ -203,12 +211,12 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
             for i in model.e:
                 model.e[i].value = 0  # give e vars fake values
             results = mock.MagicMock()
-            results.solver.termination_condition = tc.optimal
+            results.solver.termination_condition = TerminationCondition.optimal
             return results
 
         mock_solver.solve.side_effect = mock_solve_call
         results = mock.MagicMock()
-        results.solver.termination_condition = tc.optimal
+        results.solver.termination_condition = TerminationCondition.optimal
         mock_solver.solve.return_value = results
 
         with mock.patch(
@@ -319,7 +327,7 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
             model.p[1].value = -0.5
             model.alpha.value = 3.0
             results = mock.MagicMock()
-            results.solver.termination_condition = tc.optimal
+            results.solver.termination_condition = TerminationCondition.optimal
             return results
 
         mock_solver.solve.side_effect = solve_side_effect
@@ -386,6 +394,331 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
 
         # Cuts should still be 2, but updated in-place
         self.assertEqual(len(master.refined_cuts), 2)
+
+    def test_solve_gdp_terminates_immediately_when_termination_criterion_met(self):
+        # Minimal GDP model with a disjunction to drive external-variable reformulation
+        m = ConcreteModel()
+        m.x = Var(bounds=(0, 10))
+        m.obj = Objective(expr=m.x)
+        m.d1 = Disjunct()
+        m.d1.c = Constraint(expr=m.x >= 1)
+        m.d2 = Disjunct()
+        m.d2.c = Constraint(expr=m.x <= 0)
+        m.disj = Disjunction(expr=[m.d1, m.d2])
+
+        s = GDP_LDBD_Solver()
+        s.config.starting_point = (1,)
+        s.config.disjunction_list = [m.disj]
+        s.config.direction_norm = "Linf"
+        s.timing.main_timer_start_time = 0.0
+
+        s.pyomo_results = mock.MagicMock()
+        s.pyomo_results.solver = mock.MagicMock()
+        s.pyomo_results.solver.termination_condition = None
+
+        solve_point_mock = mock.MagicMock(return_value=(False, 5.0))
+        neighbor_search_mock = mock.MagicMock()
+        refine_mock = mock.MagicMock()
+        solve_master_mock = mock.MagicMock()
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                mock.patch.object(s, "_solve_discrete_point", solve_point_mock)
+            )
+            stack.enter_context(
+                mock.patch.object(s, "neighbor_search", neighbor_search_mock)
+            )
+            stack.enter_context(mock.patch.object(s, "refine_cuts", refine_mock))
+            stack.enter_context(mock.patch.object(s, "_solve_master", solve_master_mock))
+            stack.enter_context(
+                mock.patch.object(s, "any_termination_criterion_met", return_value=True)
+            )
+
+            s._solve_gdp(m, s.config)
+
+        neighbor_search_mock.assert_not_called()
+        refine_mock.assert_not_called()
+        solve_master_mock.assert_not_called()
+
+    def test_solve_gdp_sets_error_when_master_milp_fails(self):
+        # Minimal GDP model with a disjunction to drive external-variable reformulation
+        m = ConcreteModel()
+        m.x = Var(bounds=(0, 10))
+        m.obj = Objective(expr=m.x)
+        m.d1 = Disjunct()
+        m.d1.c = Constraint(expr=m.x >= 1)
+        m.d2 = Disjunct()
+        m.d2.c = Constraint(expr=m.x <= 0)
+        m.disj = Disjunction(expr=[m.d1, m.d2])
+
+        s = GDP_LDBD_Solver()
+        s.config.starting_point = (1,)
+        s.config.disjunction_list = [m.disj]
+        s.config.direction_norm = "Linf"
+        s.timing.main_timer_start_time = 0.0
+
+        s.pyomo_results = mock.MagicMock()
+        s.pyomo_results.solver = mock.MagicMock()
+        s.pyomo_results.solver.termination_condition = None
+
+        def solve_point_side_effect(point, search_type, config):
+            s.data_manager.add(
+                tuple(point),
+                feasible=True,
+                objective=5.0,
+                source=str(search_type),
+                iteration_found=0,
+            )
+            return False, 5.0
+
+        solve_point_mock = mock.MagicMock(side_effect=solve_point_side_effect)
+        neighbor_search_mock = mock.MagicMock(return_value=True)
+        refine_mock = mock.MagicMock()
+        solve_master_mock = mock.MagicMock(return_value=(None, None))
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                mock.patch.object(s, "any_termination_criterion_met", return_value=False)
+            )
+            stack.enter_context(
+                mock.patch.object(s, "_solve_discrete_point", solve_point_mock)
+            )
+            stack.enter_context(
+                mock.patch.object(s, "neighbor_search", neighbor_search_mock)
+            )
+            stack.enter_context(mock.patch.object(s, "refine_cuts", refine_mock))
+            stack.enter_context(mock.patch.object(s, "_solve_master", solve_master_mock))
+
+            s._solve_gdp(m, s.config)
+
+        self.assertEqual(s.pyomo_results.solver.termination_condition, TerminationCondition.error)
+
+    def test_solve_gdp_executes_repeat_anchor_branch(self):
+        # Minimal GDP model with a disjunction to drive external-variable reformulation
+        m = ConcreteModel()
+        m.x = Var(bounds=(0, 10))
+        m.obj = Objective(expr=m.x)
+        m.d1 = Disjunct()
+        m.d1.c = Constraint(expr=m.x >= 1)
+        m.d2 = Disjunct()
+        m.d2.c = Constraint(expr=m.x <= 0)
+        m.disj = Disjunction(expr=[m.d1, m.d2])
+
+        s = GDP_LDBD_Solver()
+        s.config.starting_point = (1,)
+        s.config.disjunction_list = [m.disj]
+        s.config.direction_norm = "Linf"
+        s.timing.main_timer_start_time = 0.0
+
+        s.pyomo_results = mock.MagicMock()
+        s.pyomo_results.solver = mock.MagicMock()
+        s.pyomo_results.solver.termination_condition = None
+
+        def solve_point_side_effect(point, search_type, config):
+            s.data_manager.add(
+                tuple(point),
+                feasible=True,
+                objective=1.0,
+                source=str(search_type),
+                iteration_found=0,
+            )
+            return False, 1.0
+
+        solve_point_mock = mock.MagicMock(side_effect=solve_point_side_effect)
+        neighbor_search_mock = mock.MagicMock(return_value=True)
+        refine_mock = mock.MagicMock()
+
+        # Return the initial point again so it is in anchors
+        solve_master_mock = mock.MagicMock(return_value=(0.0, (1,)))
+
+        # Avoid bound updates and log formatting complexity
+        update_bounds_mock = mock.MagicMock()
+        log_state_mock = mock.MagicMock()
+
+        # Force the nested branch by controlling best_solution and next_point objective
+        s.data_manager.get_best_solution = mock.MagicMock(return_value=((1,), 10.0))
+        s.data_manager.get_info = mock.MagicMock(return_value={"objective": 1.0, "source": "Anchor"})
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                mock.patch.object(s, "any_termination_criterion_met", side_effect=[False, True])
+            )
+            stack.enter_context(
+                mock.patch.object(s, "_solve_discrete_point", solve_point_mock)
+            )
+            stack.enter_context(
+                mock.patch.object(s, "neighbor_search", neighbor_search_mock)
+            )
+            stack.enter_context(mock.patch.object(s, "refine_cuts", refine_mock))
+            stack.enter_context(mock.patch.object(s, "_solve_master", solve_master_mock))
+            stack.enter_context(
+                mock.patch.object(s, "_update_bounds_after_solve", update_bounds_mock)
+            )
+            stack.enter_context(
+                mock.patch.object(s, "_log_current_state", log_state_mock)
+            )
+
+            s._solve_gdp(m, s.config)
+
+        self.assertTrue(s.data_manager.get_best_solution.called)
+        self.assertTrue(s.data_manager.get_info.called)
+
+    def test_solve_gdp_promotes_neighbor_point_to_anchor(self):
+        # Minimal GDP model with a disjunction to drive external-variable reformulation
+        m = ConcreteModel()
+        m.x = Var(bounds=(0, 10))
+        m.obj = Objective(expr=m.x)
+        m.d1 = Disjunct()
+        m.d1.c = Constraint(expr=m.x >= 1)
+        m.d2 = Disjunct()
+        m.d2.c = Constraint(expr=m.x <= 0)
+        m.disj = Disjunction(expr=[m.d1, m.d2])
+
+        s = GDP_LDBD_Solver()
+        s.config.starting_point = (1,)
+        s.config.disjunction_list = [m.disj]
+        s.config.direction_norm = "Linf"
+        s.timing.main_timer_start_time = 0.0
+
+        s.pyomo_results = mock.MagicMock()
+        s.pyomo_results.solver = mock.MagicMock()
+        s.pyomo_results.solver.termination_condition = None
+
+        def solve_point_side_effect(point, search_type, config):
+            s.data_manager.add(
+                tuple(point),
+                feasible=True,
+                objective=5.0,
+                source=str(search_type),
+                iteration_found=0,
+            )
+            return False, 5.0
+
+        solve_point_mock = mock.MagicMock(side_effect=solve_point_side_effect)
+
+        def neighbor_search_side_effect(anchor_point, config):
+            # Register a previously explored point with a non-Anchor source
+            s.data_manager.add(
+                (2,), feasible=True, objective=4.0, source="Neighbor", iteration_found=0
+            )
+            return True
+
+        neighbor_search_mock = mock.MagicMock(side_effect=neighbor_search_side_effect)
+        refine_mock = mock.MagicMock()
+        solve_master_mock = mock.MagicMock(return_value=(0.0, (2,)))
+        update_bounds_mock = mock.MagicMock()
+        log_state_mock = mock.MagicMock()
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                mock.patch.object(s, "any_termination_criterion_met", side_effect=[False, True])
+            )
+            stack.enter_context(
+                mock.patch.object(s, "_solve_discrete_point", solve_point_mock)
+            )
+            stack.enter_context(
+                mock.patch.object(s, "neighbor_search", neighbor_search_mock)
+            )
+            stack.enter_context(mock.patch.object(s, "refine_cuts", refine_mock))
+            stack.enter_context(mock.patch.object(s, "_solve_master", solve_master_mock))
+            stack.enter_context(
+                mock.patch.object(s, "_update_bounds_after_solve", update_bounds_mock)
+            )
+            stack.enter_context(
+                mock.patch.object(s, "_log_current_state", log_state_mock)
+            )
+
+            s._solve_gdp(m, s.config)
+
+        info = s.data_manager.get_info((2,))
+        self.assertEqual(info.get("source"), "Anchor (promoted)")
+        # Ensure we logged the promotion with the standard label
+        calls = [c.args[1] for c in log_state_mock.call_args_list if len(c.args) > 1]
+        self.assertIn("Anchor (promoted)", calls)
+
+    def test_solve_separation_lp_returns_none_when_no_points(self):
+        s = GDP_LDBD_Solver()
+        s.number_of_external_variables = 1
+        anchor = (1,)
+        p_vals, alpha_val = s._solve_separation_lp(anchor, s.config)
+        self.assertIsNone(p_vals)
+        self.assertIsNone(alpha_val)
+
+    def test_solve_separation_lp_gams_time_limit_sets_reslim(self):
+        s = GDP_LDBD_Solver()
+        s.number_of_external_variables = 1
+        s.config.separation_solver = "gams"
+        s.config.time_limit = 100
+        s.timing.main_timer_start_time = 0.0
+
+        # Populate D^k
+        s.data_manager.add((1,), feasible=True, objective=10.0, source="t", iteration_found=0)
+
+        mock_solver = mock.MagicMock()
+
+        def solve_side_effect(model, **kwargs):
+            model.p[0].value = 0.0
+            model.alpha.value = 0.0
+            results = mock.MagicMock()
+            results.solver.termination_condition = TerminationCondition.optimal
+            return results
+
+        mock_solver.solve.side_effect = solve_side_effect
+
+        with mock.patch(
+            "pyomo.contrib.gdpopt.ldbd.get_main_elapsed_time", return_value=120.0
+        ), mock.patch(
+            "pyomo.contrib.gdpopt.ldbd.SolverFactory", return_value=mock_solver
+        ):
+            s._solve_separation_lp((1,), s.config)
+
+        args, kwargs = mock_solver.solve.call_args
+        self.assertIn("option reslim=1;", kwargs.get("add_options", []))
+
+    def test_solve_separation_lp_nonconvergence_returns_none_and_logs(self):
+        s = GDP_LDBD_Solver()
+        s.number_of_external_variables = 1
+        s.config.separation_solver = "mock"
+        test_logger = logging.getLogger("pyomo.contrib.gdpopt.tests.test_ldbd")
+        s.config.logger = test_logger
+
+        # Populate D^k
+        s.data_manager.add((1,), feasible=True, objective=10.0, source="t", iteration_found=0)
+
+        mock_solver = mock.MagicMock()
+
+        def solve_side_effect(model, **kwargs):
+            model.p[0].value = 0.0
+            model.alpha.value = 0.0
+            results = mock.MagicMock()
+            results.solver.termination_condition = TerminationCondition.infeasible
+            return results
+
+        mock_solver.solve.side_effect = solve_side_effect
+
+        with mock.patch.object(test_logger, "debug") as debug_mock, mock.patch(
+            "pyomo.contrib.gdpopt.ldbd.SolverFactory", return_value=mock_solver
+        ):
+            p_vals, alpha_val = s._solve_separation_lp((1,), s.config)
+
+        self.assertIsNone(p_vals)
+        self.assertIsNone(alpha_val)
+        debug_mock.assert_called()
+
+    def test_refine_cuts_skips_anchor_when_separation_lp_returns_none(self):
+        s = GDP_LDBD_Solver()
+        s.data_manager.set_external_info([ExternalVarInfo(1, [], 3, 1)])
+        s.number_of_external_variables = 1
+        master = s._build_master(s.config)
+
+        s._anchors = [(1,)]
+        sep_mock = mock.MagicMock(return_value=(None, None))
+
+        with mock.patch.object(s, "_solve_separation_lp", sep_mock):
+            s.refine_cuts(s.config)
+
+        self.assertEqual(len(master.refined_cuts), 0)
+        self.assertEqual(s._cut_indices, {})
 
     def test_solve_gdp_runs_one_iteration_and_terminates_on_explicit_gap(self):
         # Minimal GDP model with a disjunction to drive external-variable reformulation
