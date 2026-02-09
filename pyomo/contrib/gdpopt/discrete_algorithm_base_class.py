@@ -35,19 +35,39 @@ from pyomo.common.collections import ComponentMap
 
 
 class DiscreteDataManager:
-    """
-    Manages the state of the discrete search space using standard built-in types.
-    
-    Storage:
-        point_info: dict[tuple[int, ...], dict[str, object]]
+    """Manage explored points in a discrete search space.
+
+    The manager stores per-point metadata (feasibility, objective, provenance)
+    using only built-in Python containers.
+
+    Attributes
+    ----------
+    point_info : dict[tuple[int, ...], dict[str, object]]
+        Mapping from an external-variable point to a metadata dictionary.
+    external_var_info_list : list
+        External variable descriptors (e.g., bounds) used for point validation.
     """
     def __init__(self, external_var_info_list=None):
+        """Create a new data manager.
+
+        Parameters
+        ----------
+        external_var_info_list : list, optional
+            External variable descriptors (e.g., a list of ``ExternalVarInfo``)
+            used to validate candidate points.
+        """
         # 使用原生 dict 和 tuple 进行标注 (无需 import)
         self.point_info: dict[tuple[int, ...], dict[str, object]] = {}
         self.external_var_info_list = external_var_info_list
 
     def set_external_info(self, external_var_info_list):
-        """Initialize with the bounds/structure of the external variables."""
+        """Set bounds/structure information for external variables.
+
+        Parameters
+        ----------
+        external_var_info_list : list
+            External variable descriptors (e.g., a list of ``ExternalVarInfo``).
+        """
         self.external_var_info_list = external_var_info_list
 
     def add(
@@ -58,8 +78,20 @@ class DiscreteDataManager:
         source: str,
         iteration_found: int,
     ):
-        """
-        Register a visited point.
+        """Register a visited point and its metadata.
+
+        Parameters
+        ----------
+        point : tuple[int, ...]
+            External-variable point.
+        feasible : bool
+            Whether the point is feasible.
+        objective : float
+            Objective value (or penalty value for infeasible points).
+        source : str
+            Provenance label (e.g., "Neighbor", "Anchor").
+        iteration_found : int
+            Iteration counter at which the point was first evaluated.
         """
         self.point_info[point] = {
             "feasible": feasible,
@@ -69,18 +101,67 @@ class DiscreteDataManager:
         }
 
     def is_visited(self, point: tuple[int, ...]) -> bool:
+        """Check whether a point has already been evaluated.
+
+        Parameters
+        ----------
+        point : tuple[int, ...]
+            External-variable point.
+
+        Returns
+        -------
+        bool
+            ``True`` if the point is present in the registry.
+        """
         return point in self.point_info
 
     def get_info(self, point: tuple[int, ...]) -> dict[str, object] | None:
+        """Get stored metadata for a point.
+
+        Parameters
+        ----------
+        point : tuple[int, ...]
+            External-variable point.
+
+        Returns
+        -------
+        dict[str, object] or None
+            Metadata dictionary if present; otherwise ``None``.
+        """
         return self.point_info.get(point)
 
     def get_cached_value(self, point: tuple[int, ...]) -> float | None:
+        """Get the cached objective value for a visited point.
+
+        Parameters
+        ----------
+        point : tuple[int, ...]
+            External-variable point.
+
+        Returns
+        -------
+        float or None
+            Cached objective value, or ``None`` if the point is unknown.
+        """
         info = self.point_info.get(point)
         if info:
             return info["objective"]
         return None
 
     def is_valid_point(self, point: tuple[int, ...]) -> bool:
+        """Check whether a point lies within configured bounds.
+
+        Parameters
+        ----------
+        point : tuple[int, ...]
+            External-variable point.
+
+        Returns
+        -------
+        bool
+            ``True`` if the point is within all bounds, or if no bound
+            information is available.
+        """
         if not self.external_var_info_list:
             return True
             
@@ -90,8 +171,13 @@ class DiscreteDataManager:
         )
     
     def get_best_solution(self) -> tuple[tuple[int, ...] | None, float | None]:
-        """
-        Returns (best_point, best_objective) or (None, None).
+        """Return the best feasible point found so far.
+
+        Returns
+        -------
+        (tuple[int, ...] or None, float or None)
+            ``(best_point, best_objective)`` if any feasible point exists;
+            otherwise ``(None, None)``.
         """
         # 筛选出 feasible 为 True 的点
         feasible_candidates = {
@@ -120,71 +206,63 @@ ExternalVarInfo = namedtuple(
 )
 
 class _GDPoptDiscreteAlgorithm(_GDPoptAlgorithm):
-
     """Base class for GDPopt discrete algorithms.
-    ## Developer Notes:
 
-    As we introduced the DatasManager class to handle discrete search space management, what has been changed from the current LDSDA algorithm
+    Notes
+    -----
+    This base class centralizes the common discrete-search machinery and uses
+    :class:`~pyomo.contrib.gdpopt.discrete_algorithm_base_class.DiscreteDataManager`
+    to track evaluated points.
 
-    *. the _get_directions are not changed
-    *. the _handle_subproblem_result are not changed
-    *. the logging functions are not changed
-
-    *. the _check_valid_neighbor are changed based on the new DataManager class
-    *. the _get_external_information are changed based on the new DataManager class
-    *. the _fix_disjunctions_with_external_var are not changed but the name is updated
-    *. the _solve_gdp are changed to call the _initialize_discrete_model function
-
-    *. the _solve_discrete_point are added based on the new DataManager class
-    *. the _generate_neighbors are added based on the new DataManager class
-    *. the _initialize_discrete_model are added based on the _solve_gdp function in LDSDA
-    
-    
+    Developer notes (relative to LDSDA)
+            - Direction generation and subproblem-result handling are reused.
+            - Neighbor validity checks and external-variable extraction were
+                refactored to use the data manager.
+            - Discrete-point evaluation and neighbor generation were factored into
+                dedicated helper methods.
     """
 
-    # 1. Define the Common Configuration here
-    # What you should do in the child class:
-    # # class GDP_LDSDA_Solver(_GDPoptDiscreteAlgorithm):
-    # #   # 1. Extend the Base CONFIG with LDSDA-specific options
-    # #    CONFIG = _GDPoptDiscreteAlgorithm.CONFIG()
-    # #    _add_ldsda_configs(CONFIG)
-    # #... (Rest of class)
-
     def __init__(self, **kwds):
+        """Initialize the discrete algorithm base.
+
+        Parameters
+        ----------
+        **kwds
+            Forwarded to the GDPopt base algorithm constructor.
+        """
         super().__init__(**kwds)
         self.data_manager = DiscreteDataManager()
         
     def _get_external_information(self, util_block, config):
-        """
-        Extract information from the model to perform the reformulation with external variables.
+        """Extract external-variable metadata from the working model.
 
-        Identifies logical constraints (specifically `ExactlyExpression`) or
-        disjunctions to map them to external integer variables used for the
-        discrete search.
+        This inspects the configured logical constraints and/or disjunctions
+        and creates a list of external-variable descriptors used to map GDP
+        structure into a discrete (integer) search space.
 
         Parameters
         ----------
         util_block : Block
-            The GDPopt utility block of the model where metadata is stored.
+            GDPopt utility block attached to the working model.
         config : ConfigBlock
-            The configuration block containing logical constraint or disjunction lists.
+            GDPopt configuration block. Uses ``logical_constraint_list``,
+            ``disjunction_list``, and ``starting_point``.
 
         Raises
         ------
         ValueError
-            If a logical constraint is not an `ExactlyExpression`.
-            If an `Exactly(N)` constraint has N > 1.
-            If the length of the starting point does not match the number of
-            external variables derived.
+            If a configured logical constraint is not an ``ExactlyExpression``.
+        ValueError
+            If an ``Exactly(N)`` constraint has ``N > 1``.
+        ValueError
+            If the length of ``config.starting_point`` does not match the
+            number of derived external variables.
         """
         util_block.external_var_info_list = []
         model = util_block.parent_block()
         reformulation_summary = []
         # Identify the variables that can be reformulated by performing a loop over logical constraints
-        # TODO: we can automatically find all Exactly logical constraints in the model.
-        # However, we cannot link the starting point and the logical constraint.
-        # for c in util_block.logical_constraint_list:
-        #     if isinstance(c.body, ExactlyExpression):
+        
         if config.logical_constraint_list is not None:
             for c in util_block.config_logical_constraint_list:
                 if not isinstance(c.body, ExactlyExpression):
@@ -256,8 +334,17 @@ class _GDPoptDiscreteAlgorithm(_GDPoptAlgorithm):
             )
 
     def _fix_disjunctions_with_external_var(self, external_var_values_list):
-        """
-        Generic method to fix Boolean variables based on external integer values.
+        """Fix Boolean variables to match an external-variable point.
+
+        Parameters
+        ----------
+        external_var_values_list : tuple[int, ...] or list[int]
+            External-variable values. Each value is interpreted as 1-based
+            index selecting the active Boolean among the associated list.
+
+        Returns
+        -------
+        None
         """
         for external_variable_value, external_var_info in zip(
             external_var_values_list,
@@ -272,12 +359,31 @@ class _GDPoptDiscreteAlgorithm(_GDPoptAlgorithm):
                     boolean_var.get_associated_binary().fix(1 if is_active else 0)
 
     def _solve_discrete_point(self, point, search_type, config):
-        """
-        A wrapper around the specific subproblem solver.
-        Handles checking the DataManager and registering the result.
-        
-        Returns:
-            (primal_improved, primal_bound)
+        """Evaluate a single discrete point and register the result.
+
+        This wrapper handles caching (skip if already visited), fixing the
+        working model to the requested point, and registering feasibility and
+        objective information in the data manager.
+
+        Parameters
+        ----------
+        point : tuple[int, ...]
+            External-variable point to evaluate.
+        search_type : str
+            Label describing why the point is being evaluated (e.g., "Anchor",
+            "Neighbor").
+        config : ConfigBlock
+            GDPopt configuration block.
+
+        Returns
+        -------
+        (bool, float)
+            ``(primal_improved, objective)``.
+
+            - ``primal_improved`` indicates whether the solve improved the
+              solver's incumbent bound.
+            - ``objective`` is the objective value (or penalty value for
+              infeasible points).
         """
         # 1. Check if already visited (optional, depending on algorithm logic)
         # Some algos might re-evaluate, but usually we skip.
@@ -393,22 +499,24 @@ class _GDPoptDiscreteAlgorithm(_GDPoptAlgorithm):
         return primal_improved, primal_bound
 
     def _get_directions(self, dimension, config):
-        """
-        Generate the search directions for the given dimension.
+        """Generate neighborhood search directions.
 
         Parameters
         ----------
         dimension : int
-            The dimensionality of the neighborhood (number of external variables).
+            Dimensionality of the external-variable space.
         config : ConfigBlock
-            The configuration block specifying the norm ('L2' or 'Linf').
+            Configuration block specifying the direction norm.
 
         Returns
         -------
-        list of tuple
-            A list of direction vectors (tuples).
-            - If 'L2': Standard basis vectors and their negatives.
-            - If 'Linf': All combinations of {-1, 0, 1} excluding the zero vector.
+        list[tuple[int, ...]]
+            Direction vectors.
+
+            - If ``config.direction_norm == 'L2'``: standard basis vectors and
+              their negatives.
+            - If ``config.direction_norm == 'Linf'``: all combinations from
+              ``{-1, 0, 1}^dimension`` excluding the zero vector.
         """
         if config.direction_norm == 'L2':
             directions = []
@@ -422,22 +530,20 @@ class _GDPoptDiscreteAlgorithm(_GDPoptAlgorithm):
             return directions
 
     def _check_valid_neighbor(self, neighbor):
-        """
-        Check if a given neighbor point is valid.
+        """Check whether a neighbor point is valid.
 
-        A neighbor is valid if it has not been explored yet and lies within
-        the defined bounds (LB and UB) of the external variables.
+        A neighbor is valid if it has not been evaluated and lies within the
+        configured bounds.
 
         Parameters
         ----------
-        neighbor : tuple
-            The coordinates of the neighbor point to check.
+        neighbor : tuple[int, ...]
+            Candidate neighbor point.
 
         Returns
         -------
         bool
-            True if the neighbor is valid (unexplored and within bounds),
-            False otherwise.
+            ``True`` if the neighbor is valid.
         """
         if self.data_manager.is_visited(neighbor):
             return False
@@ -446,9 +552,19 @@ class _GDPoptDiscreteAlgorithm(_GDPoptAlgorithm):
         return True
     
     def _generate_neighbors(self, current_point, config):
-        """
-        Generates valid, unvisited neighbors based on directions.
-        Refactored to use DataManager for validity checks.
+        """Generate valid, unvisited neighbors from a current point.
+
+        Parameters
+        ----------
+        current_point : tuple[int, ...]
+            Current external-variable point.
+        config : ConfigBlock
+            GDPopt configuration block.
+
+        Returns
+        -------
+        list[tuple[tuple[int, ...], tuple[int, ...]]]
+            List of ``(neighbor_point, direction)`` pairs.
         """
         directions = self._get_directions(self.number_of_external_variables, config)
         valid_neighbors = []
@@ -465,30 +581,28 @@ class _GDPoptDiscreteAlgorithm(_GDPoptAlgorithm):
     def _handle_subproblem_result(
         self, subproblem_result, subproblem, external_var_value, config, search_type
     ):
-        """
-        Process the result of a subproblem solve.
+        """Process the result of a discrete subproblem solve.
 
-        Checks termination conditions, updates primal bounds if valid, and
-        logs the state.
+        This inspects the solver termination condition, updates bounds when
+        appropriate, and logs status.
 
         Parameters
         ----------
         subproblem_result : SolverResults
-            The result object returned by the solver.
+            Solver results object.
         subproblem : ConcreteModel
-            The subproblem model instance.
-        external_var_value : tuple
-            The external variable configuration used for this subproblem.
+            Subproblem model instance.
+        external_var_value : tuple[int, ...]
+            External-variable point used to create the subproblem.
         config : ConfigBlock
-            The configuration block.
+            GDPopt configuration block.
         search_type : str
-            The type of search ('Neighbor search', etc.).
+            Label for logging (e.g., "Neighbor").
 
         Returns
         -------
         bool
-            True if the result improved the current best primal bound,
-            False otherwise.
+            ``True`` if the primal bound improved; ``False`` otherwise.
         """
         if subproblem_result is None:
             return False
@@ -520,6 +634,13 @@ class _GDPoptDiscreteAlgorithm(_GDPoptAlgorithm):
         return False
 
     def _log_header(self, logger):
+        """Log the tabular header for discrete-search progress.
+
+        Parameters
+        ----------
+        logger : logging.Logger
+            Logger to write to.
+        """
         logger.info(
             '================================================================='
             '===================================='
@@ -539,6 +660,19 @@ class _GDPoptDiscreteAlgorithm(_GDPoptAlgorithm):
     def _log_current_state(
         self, logger, search_type, current_point, primal_improved=False
     ):
+        """Log a single iteration state line.
+
+        Parameters
+        ----------
+        logger : logging.Logger
+            Logger to write to.
+        search_type : str
+            Label for the current action (e.g., "Anchor", "Neighbor").
+        current_point : tuple[int, ...]
+            External-variable point.
+        primal_improved : bool, optional
+            Whether the primal bound improved.
+        """
         star = "*" if primal_improved else ""
         logger.info(
             self.log_formatter.format(
@@ -556,6 +690,26 @@ class _GDPoptDiscreteAlgorithm(_GDPoptAlgorithm):
     def _update_bounds_after_solve(
         self, search_type, primal=None, dual=None, logger=None, current_point=None
     ):
+        """Update bounds after a subproblem solve and optionally log state.
+
+        Parameters
+        ----------
+        search_type : str
+            Label for logging.
+        primal : float, optional
+            New primal bound candidate.
+        dual : float, optional
+            New dual bound candidate.
+        logger : logging.Logger, optional
+            Logger used to log state.
+        current_point : tuple[int, ...], optional
+            Point associated with the update.
+
+        Returns
+        -------
+        bool
+            ``True`` if the primal bound improved.
+        """
         primal_improved = self._update_bounds(primal, dual)
         if logger is not None:
             self._log_current_state(logger, search_type, current_point, primal_improved)
