@@ -62,11 +62,13 @@ tabulate, tabulate_available = attempt_import("tabulate")
     "Generalized Disjunctive Programming (GDP) solver",
 )
 class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
-    """The GDPopt (Generalized Disjunctive Programming optimizer)
-    LD-BD (Logic-based Discrete Benders Decomposition (LD-BD)) solver.
+    """LD-BD solver for GDP models.
 
-    Accepts models that can include nonlinear, continuous variables and
-    constraints, as well as logical conditions.
+    This is the GDPopt discrete solver implementing Logic-based Discrete
+    Benders Decomposition (LD-BD).
+
+    The solver accepts GDP models that can include nonlinear constraints,
+    continuous variables, and logical conditions.
     """
 
     CONFIG = _GDPoptAlgorithm.CONFIG()
@@ -83,21 +85,55 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
     # Override solve() to customize the docstring for this solver
     @document_kwargs_from_configdict(CONFIG, doc=_GDPoptAlgorithm.solve.__doc__)
     def solve(self, model, **kwds):
-        return super().solve(model, **kwds)
-
-    def _log_citation(self, config):
-        config.logger.info("\n" + """TODO: Add citation for LD-BD here.
-        """.strip())
-
-    def _solve_gdp(self, model, config):
-        """Solve the GDP model.
+        """Solve a GDP model using LD-BD.
 
         Parameters
         ----------
         model : ConcreteModel
-            The GDP model to be solved
+            GDP model to solve.
+        **kwds
+            Keyword arguments used to override entries in the solver
+            configuration block.
+
+        Returns
+        -------
+        SolverResults
+            A Pyomo ``SolverResults`` object populated by GDPopt.
+
+        Notes
+        -----
+        The configuration options and their defaults are documented in the
+        base GDPopt ``solve`` method; this method only dispatches to the
+        discrete LD-BD implementation.
+        """
+        return super().solve(model, **kwds)
+
+    def _log_citation(self, config):
+        """Log citation information for this solver.
+
+        Parameters
+        ----------
         config : ConfigBlock
-            GDPopt configuration block
+            GDPopt configuration block providing the logger.
+        """
+        config.logger.info("\n" + """TODO: Add citation for LD-BD here.
+        """.strip())
+
+    def _solve_gdp(self, model, config):
+        """Solve the GDP model using the LD-BD algorithm.
+
+        Parameters
+        ----------
+        model : ConcreteModel
+            The GDP model to be solved.
+        config : ConfigBlock
+            GDPopt configuration block.
+
+        Returns
+        -------
+        None
+            Results are stored on ``self.pyomo_results`` and bounds/state are
+            updated on the solver instance.
         """
         logger = config.logger
         self.log_formatter = (
@@ -230,35 +266,40 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
             if self.current_point not in self._anchors:
                 self._anchors.append(self.current_point)
 
-
     def _build_master(self, config):
-        """Construct the LD-BD master problem.
+        """Construct the LD-BD master MILP.
 
-        The LD-BD master problem is an epigraph MILP over the *external* integer
+        The LD-BD master is an epigraph MILP over the *external* integer
         variables.
 
-        Master variables
-        ----------------
-        - ``e[i]``: integer external variables (one per external decision), with
-          bounds taken from ``self.data_manager.external_var_info_list``.
-        - ``z``: continuous epigraph variable representing the master objective.
+        Parameters
+        ----------
+        config : ConfigBlock
+                GDPopt configuration block (reserved for future use).
 
-        Master constraints
-        ------------------
-        - ``refined_cuts``: a ``ConstraintList`` holding refined cuts, one per
-          anchor point.
-
-        Side effects
-        ------------
-        - Sets ``self.master``.
-        - Initializes ``self._cut_indices`` and ``self._anchors``.
+        Returns
+        -------
+        ConcreteModel
+                The master MILP model.
 
         Notes
         -----
         This function only constructs the master; it does not solve it.
 
-        Doctest-style example
-        ---------------------
+        The master contains:
+
+        - ``e[i]``: integer external variables with bounds taken from
+            ``self.data_manager.external_var_info_list``.
+        - ``z``: continuous epigraph variable.
+        - ``refined_cuts``: a ``ConstraintList`` containing refined cuts.
+
+        Side effects:
+
+        - Sets ``self.master``.
+        - Initializes ``self._cut_indices`` and ``self._anchors``.
+
+        Examples
+        --------
         >>> from pyomo.contrib.gdpopt.ldbd import GDP_LDBD_Solver
         >>> from pyomo.contrib.gdpopt.discrete_algorithm_base_class import ExternalVarInfo
         >>> s = GDP_LDBD_Solver()
@@ -361,25 +402,28 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
         return z_lb, next_point
 
     def neighbor_search(self, anchor_point, config):
-        """Evaluate the LD-BD neighborhood around an anchor point.
+        """Evaluate the neighborhood around an anchor point.
 
-        Implements the neighbor-search set update in ldbd.tex:
+        The anchor itself is always evaluated. If it is feasible (objective
+        strictly less than ``config.infinity_output``), then all neighbors in
+        the configured norm-ball neighborhood are evaluated.
 
-        - Always evaluate the anchor point.
-                - If the anchor is feasible (objective < `config.infinity_output`),
-                    evaluate all neighboring points in the norm-ball neighborhood.
-        - If the anchor is infeasible, do not evaluate any neighbors.
-
-        Notes
-        -----
-        - The center point is the anchor itself; it is evaluated explicitly.
-        - `_generate_neighbors` filters by bounds and skips already visited
-          points via `self.data_manager`.
+        Parameters
+        ----------
+        anchor_point : tuple[int, ...]
+            The anchor (center) point in the external-variable space.
+        config : ConfigBlock
+            GDPopt configuration block.
 
         Returns
         -------
         bool
-            True if the anchor point is feasible, else False.
+            ``True`` if the anchor point is feasible; ``False`` otherwise.
+
+        Notes
+        -----
+        Neighbor generation is bounded by the external-variable bounds stored
+        on ``self.data_manager``.
         """
         anchor_point = tuple(anchor_point)
 
@@ -475,10 +519,19 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
         return p_vals, alpha_val
 
     def refine_cuts(self, config):
-        """Refine-all: update the master cuts for all evaluated points.
+        """Refine master cuts for all anchors.
 
-        Per ldbd.tex, we solve a separation LP for each anchor point and add / update
-        the corresponding refined cut in the master problem.
+        For each anchor point, solve the separation LP and add or update the
+        corresponding refined cut in the master model.
+
+        Parameters
+        ----------
+        config : ConfigBlock
+            GDPopt configuration block.
+
+        Returns
+        -------
+        None
         """
         master = getattr(self, "master", None)
 
@@ -522,4 +575,16 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
                 self._cut_indices[anchor] = cut_idx
 
     def any_termination_criterion_met(self, config):
+        """Check whether any termination criterion is satisfied.
+
+        Parameters
+        ----------
+        config : ConfigBlock
+            GDPopt configuration block.
+
+        Returns
+        -------
+        bool
+            ``True`` if the solver should terminate.
+        """
         return self.reached_iteration_limit(config) or self.reached_time_limit(config)

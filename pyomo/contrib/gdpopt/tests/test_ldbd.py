@@ -77,8 +77,6 @@ class TestGDPoptLDBD(unittest.TestCase):
 
 class TestGDPoptLDBDUnit(unittest.TestCase):
 
-
-
     def test_build_master_creates_vars_and_registry(self):
         s = GDP_LDBD_Solver()
 
@@ -429,7 +427,9 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
                 mock.patch.object(s, "neighbor_search", neighbor_search_mock)
             )
             stack.enter_context(mock.patch.object(s, "refine_cuts", refine_mock))
-            stack.enter_context(mock.patch.object(s, "_solve_master", solve_master_mock))
+            stack.enter_context(
+                mock.patch.object(s, "_solve_master", solve_master_mock)
+            )
             stack.enter_context(
                 mock.patch.object(s, "any_termination_criterion_met", return_value=True)
             )
@@ -478,7 +478,9 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
 
         with ExitStack() as stack:
             stack.enter_context(
-                mock.patch.object(s, "any_termination_criterion_met", return_value=False)
+                mock.patch.object(
+                    s, "any_termination_criterion_met", return_value=False
+                )
             )
             stack.enter_context(
                 mock.patch.object(s, "_solve_discrete_point", solve_point_mock)
@@ -487,11 +489,15 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
                 mock.patch.object(s, "neighbor_search", neighbor_search_mock)
             )
             stack.enter_context(mock.patch.object(s, "refine_cuts", refine_mock))
-            stack.enter_context(mock.patch.object(s, "_solve_master", solve_master_mock))
+            stack.enter_context(
+                mock.patch.object(s, "_solve_master", solve_master_mock)
+            )
 
             s._solve_gdp(m, s.config)
 
-        self.assertEqual(s.pyomo_results.solver.termination_condition, TerminationCondition.error)
+        self.assertEqual(
+            s.pyomo_results.solver.termination_condition, TerminationCondition.error
+        )
 
     def test_solve_gdp_executes_repeat_anchor_branch(self):
         # Minimal GDP model with a disjunction to drive external-variable reformulation
@@ -537,11 +543,15 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
 
         # Force the nested branch by controlling best_solution and next_point objective
         s.data_manager.get_best_solution = mock.MagicMock(return_value=((1,), 10.0))
-        s.data_manager.get_info = mock.MagicMock(return_value={"objective": 1.0, "source": "Anchor"})
+        s.data_manager.get_info = mock.MagicMock(
+            return_value={"objective": 1.0, "source": "Anchor"}
+        )
 
         with ExitStack() as stack:
             stack.enter_context(
-                mock.patch.object(s, "any_termination_criterion_met", side_effect=[False, True])
+                mock.patch.object(
+                    s, "any_termination_criterion_met", side_effect=[False, True]
+                )
             )
             stack.enter_context(
                 mock.patch.object(s, "_solve_discrete_point", solve_point_mock)
@@ -550,7 +560,9 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
                 mock.patch.object(s, "neighbor_search", neighbor_search_mock)
             )
             stack.enter_context(mock.patch.object(s, "refine_cuts", refine_mock))
-            stack.enter_context(mock.patch.object(s, "_solve_master", solve_master_mock))
+            stack.enter_context(
+                mock.patch.object(s, "_solve_master", solve_master_mock)
+            )
             stack.enter_context(
                 mock.patch.object(s, "_update_bounds_after_solve", update_bounds_mock)
             )
@@ -611,7 +623,9 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
 
         with ExitStack() as stack:
             stack.enter_context(
-                mock.patch.object(s, "any_termination_criterion_met", side_effect=[False, True])
+                mock.patch.object(
+                    s, "any_termination_criterion_met", side_effect=[False, True]
+                )
             )
             stack.enter_context(
                 mock.patch.object(s, "_solve_discrete_point", solve_point_mock)
@@ -620,7 +634,9 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
                 mock.patch.object(s, "neighbor_search", neighbor_search_mock)
             )
             stack.enter_context(mock.patch.object(s, "refine_cuts", refine_mock))
-            stack.enter_context(mock.patch.object(s, "_solve_master", solve_master_mock))
+            stack.enter_context(
+                mock.patch.object(s, "_solve_master", solve_master_mock)
+            )
             stack.enter_context(
                 mock.patch.object(s, "_update_bounds_after_solve", update_bounds_mock)
             )
@@ -652,7 +668,9 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
         s.timing.main_timer_start_time = 0.0
 
         # Populate D^k
-        s.data_manager.add((1,), feasible=True, objective=10.0, source="t", iteration_found=0)
+        s.data_manager.add(
+            (1,), feasible=True, objective=10.0, source="t", iteration_found=0
+        )
 
         mock_solver = mock.MagicMock()
 
@@ -683,7 +701,9 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
         s.config.logger = test_logger
 
         # Populate D^k
-        s.data_manager.add((1,), feasible=True, objective=10.0, source="t", iteration_found=0)
+        s.data_manager.add(
+            (1,), feasible=True, objective=10.0, source="t", iteration_found=0
+        )
 
         mock_solver = mock.MagicMock()
 
