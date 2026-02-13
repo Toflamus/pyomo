@@ -35,7 +35,6 @@ from pyomo.contrib.gdpopt.nlp_initialization import restore_vars_to_original_val
 from pyomo.contrib.gdpopt.util import SuppressInfeasibleWarning, get_main_elapsed_time
 from pyomo.contrib.satsolver.satsolver import satisfiable
 from pyomo.core import minimize, Suffix, TransformationFactory, Objective, value
-from pyomo.core import minimize, Suffix, TransformationFactory, Objective, value
 from pyomo.opt import SolverFactory
 from pyomo.opt import TerminationCondition as tc
 from pyomo.core.expr.logical_expr import ExactlyExpression
@@ -354,7 +353,7 @@ class GDP_LDSDA_Solver(_GDPoptAlgorithm):
         if neighbor in self.explored_point_set:
             return False
         return all(
-            external_var_value >= external_var_info.LB
+            external_var_value >= external_var_info.LB 
             and external_var_value <= external_var_info.UB
             for external_var_value, external_var_info in zip(
                 neighbor, self.working_model_util_block.external_var_info_list
