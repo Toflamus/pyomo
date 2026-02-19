@@ -246,12 +246,46 @@ class _MindtPyAlgorithm:
             self.add_cuts_components(model)
 
     def model_is_valid(self):
-        """Determines whether the model is solvable by MindtPy.
+        """
+            Check if the model requires the MindtPy MINLP decomposition algorithm.
 
-        Returns
-        -------
-        bool
-            True if model is solvable in MindtPy, False otherwise.
+            This method performs a structural check on the working model.
+            It determines if the problem is a true Mixed-Integer program.
+            If no discrete variables are present, it serves as a short-circuit.
+            In short-circuit cases, the problem is solved immediately as an LP or NLP.
+
+            Returns
+            -------
+            bool
+                True if the model has discrete variables and requires MindtPy iteration.
+                False if the model is purely continuous (LP or NLP).
+
+            Notes
+            -----
+            The validity check follows a specific hierarchical logic:
+
+            1. Discrete Variable Presence
+            The method first inspects ``MindtPy.discrete_variable_list``.
+            If this list is not empty, the function implicitly returns True.
+            This indicates the model is a valid MINLP for decomposition.
+
+            2. Continuous Model Handling (The "False" cases)
+            If the discrete variable list is empty, the model is "invalid" for MINLP.
+            The method then differentiates between LP and NLP structures.
+
+            3. NLP Branch
+            The code checks the ``polynomial_degree`` of constraints and objectives.
+            If any degree is non-linear (not in ``mip_constraint_polynomial_degree``),
+            it is treated as a standard Nonlinear Program (NLP).
+            The ``config.nlp_solver`` is called to solve the original model directly.
+
+            4. LP Branch
+            If all components are linear, it is treated as a Linear Program (LP).
+            The ``config.mip_solver`` is utilized for the solution process.
+            Solutions are loaded directly back into the ``original_model``.
+
+            In both continuous cases, the method returns False to bypass the main loop.
+            This ensures MindtPy does not attempt decomposition on trivial continuous models.
         """
         m = self.working_model
         MindtPy = m.MindtPy_utils
@@ -261,7 +295,9 @@ class _MindtPyAlgorithm:
         prob = self.results.problem
         if len(MindtPy.discrete_variable_list) == 0:
             config.logger.info('Problem has no discrete decisions.')
+
             obj = next(m.component_data_objects(ctype=Objective, active=True))
+            
             if (
                 any(
                     c.body.polynomial_degree()
@@ -278,11 +314,29 @@ class _MindtPyAlgorithm:
                 update_solver_timelimit(
                     self.nlp_opt, config.nlp_solver, self.timing, config
                 )
-                self.nlp_opt.solve(
+                results = self.nlp_opt.solve(
                     self.original_model,
                     tee=config.nlp_solver_tee,
+                    load_solutions=self.nlp_load_solutions,
                     **config.nlp_solver_args,
                 )
+                if len(results.solution) > 0:
+                    self.original_model.solutions.load_from(results)
+
+                # Mirror direct solver status into MindtPy results
+                prob.sense = obj.sense
+                self.results.solver.status = getattr(
+                    results.solver, 'status', SolverStatus.ok
+                )
+                self.results.solver.termination_condition = (
+                    results.solver.termination_condition
+                )
+                self.results.solver.message = getattr(results.solver, 'message', None)
+                obj_val = value(obj.expr, exception=False)
+                if obj_val is not None:
+                    # For a direct continuous solve, primal==dual at the solution.
+                    prob.lower_bound = obj_val
+                    prob.upper_bound = obj_val
                 return False
             else:
                 config.logger.info(
@@ -302,6 +356,24 @@ class _MindtPyAlgorithm:
                 )
                 if len(results.solution) > 0:
                     self.original_model.solutions.load_from(results)
+
+                # Mirror direct solver status into MindtPy results
+                prob.sense = obj.sense
+                self.results.solver.status = getattr(
+                    results.solver, 'status', SolverStatus.ok
+                )
+                self.results.solver.termination_condition = (
+                    results.solver.termination_condition
+                )
+                self.results.solver.message = getattr(results.solver, 'message', None)
+
+                # Prefer bound info from the direct solver results if present
+                lb = getattr(results.problem, 'lower_bound', None)
+                ub = getattr(results.problem, 'upper_bound', None)
+                if lb is not None:
+                    prob.lower_bound = lb
+                if ub is not None:
+                    prob.upper_bound = ub
                 return False
 
         # Set up dual value reporting
@@ -2801,13 +2873,15 @@ class _MindtPyAlgorithm:
             self._log_solver_intro_message()
             self.initialize_subsolvers()
 
+            # Initialize MindtPy results early so that direct LP/NLP short-circuit
+            # paths can still return a valid SolverResults object.
+            setup_results_object(self.results, self.original_model, config)
+
             # Validate the model to ensure that MindtPy is able to solve it.
             if not self.model_is_valid():
-                return
+                return self.results
 
             MindtPy = self.working_model.MindtPy_utils
-
-            setup_results_object(self.results, self.original_model, config)
 
             # Reformulate the objective function.
             self.objective_reformulation()
