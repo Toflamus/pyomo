@@ -390,6 +390,19 @@ class _MindtPyAlgorithm:
                     prob.lower_bound = lb
                 if ub is not None:
                     prob.upper_bound = ub
+
+                # Fallback: if the LP solver reports optimal termination but does
+                # not provide explicit bounds, infer them from the objective value.
+                if (
+                    (lb is None or ub is None)
+                    and self.results.solver.termination_condition == tc.optimal
+                    and len(self.original_model.solutions) > 0
+                ):
+                    obj_val = value(obj)
+                    if lb is None:
+                        prob.lower_bound = obj_val
+                    if ub is None:
+                        prob.upper_bound = obj_val
                 return False
 
         # Set up dual value reporting
