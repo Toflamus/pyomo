@@ -247,45 +247,45 @@ class _MindtPyAlgorithm:
 
     def model_is_valid(self):
         """
-            Check if the model requires the MindtPy MINLP decomposition algorithm.
+        Check if the model requires the MindtPy MINLP decomposition algorithm.
 
-            This method performs a structural check on the working model.
-            It determines if the problem is a true Mixed-Integer program.
-            If no discrete variables are present, it serves as a short-circuit.
-            In short-circuit cases, the problem is solved immediately as an LP or NLP.
+        This method performs a structural check on the working model.
+        It determines if the problem is a true Mixed-Integer program.
+        If no discrete variables are present, it serves as a short-circuit.
+        In short-circuit cases, the problem is solved immediately as an LP or NLP.
 
-            Returns
-            -------
-            bool
-                True if the model has discrete variables and requires MindtPy iteration.
-                False if the model is purely continuous (LP or NLP).
+        Returns
+        -------
+        bool
+            True if the model has discrete variables and requires MindtPy iteration.
+            False if the model is purely continuous (LP or NLP).
 
-            Notes
-            -----
-            The validity check follows a specific hierarchical logic:
+        Notes
+        -----
+        The validity check follows a specific hierarchical logic:
 
-            1. Discrete Variable Presence
-            The method first inspects ``MindtPy.discrete_variable_list``.
-            If this list is not empty, the function implicitly returns True.
-            This indicates the model is a valid MINLP for decomposition.
+        1. Discrete Variable Presence
+        The method first inspects ``MindtPy.discrete_variable_list``.
+        If this list is not empty, the function implicitly returns True.
+        This indicates the model is a valid MINLP for decomposition.
 
-            2. Continuous Model Handling (The "False" cases)
-            If the discrete variable list is empty, the model is "invalid" for MINLP.
-            The method then differentiates between LP and NLP structures.
+        2. Continuous Model Handling (The "False" cases)
+        If the discrete variable list is empty, the model is "invalid" for MINLP.
+        The method then differentiates between LP and NLP structures.
 
-            3. NLP Branch
-            The code checks the ``polynomial_degree`` of constraints and objectives.
-            If any degree is non-linear (not in ``mip_constraint_polynomial_degree``),
-            it is treated as a standard Nonlinear Program (NLP).
-            The ``config.nlp_solver`` is called to solve the original model directly.
+        3. NLP Branch
+        The code checks the ``polynomial_degree`` of constraints and objectives.
+        If any degree is non-linear (not in ``mip_constraint_polynomial_degree``),
+        it is treated as a standard Nonlinear Program (NLP).
+        The ``config.nlp_solver`` is called to solve the original model directly.
 
-            4. LP Branch
-            If all components are linear, it is treated as a Linear Program (LP).
-            The ``config.mip_solver`` is utilized for the solution process.
-            Solutions are loaded directly back into the ``original_model``.
+        4. LP Branch
+        If all components are linear, it is treated as a Linear Program (LP).
+        The ``config.mip_solver`` is utilized for the solution process.
+        Solutions are loaded directly back into the ``original_model``.
 
-            In both continuous cases, the method returns False to bypass the main loop.
-            This ensures MindtPy does not attempt decomposition on trivial continuous models.
+        In both continuous cases, the method returns False to bypass the main loop.
+        This ensures MindtPy does not attempt decomposition on trivial continuous models.
         """
         m = self.working_model
         MindtPy = m.MindtPy_utils
