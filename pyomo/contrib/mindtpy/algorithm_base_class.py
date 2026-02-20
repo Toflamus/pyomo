@@ -331,11 +331,28 @@ class _MindtPyAlgorithm:
                     results.solver.termination_condition
                 )
                 self.results.solver.message = getattr(results.solver, 'message', None)
-                obj_val = value(obj.expr, exception=False)
-                if obj_val is not None:
-                    # For a direct continuous solve, primal==dual at the solution.
-                    prob.lower_bound = obj_val
-                    prob.upper_bound = obj_val
+
+                # Prefer bound info from the direct NLP solver results if present
+                lb = getattr(results.problem, 'lower_bound', None)
+                ub = getattr(results.problem, 'upper_bound', None)
+                if lb is not None:
+                    prob.lower_bound = lb
+                if ub is not None:
+                    prob.upper_bound = ub
+
+                # If the solver reported an optimal termination but did not
+                # provide explicit bounds, fall back to using the objective value.
+                if (
+                    getattr(self.results.solver, 'termination_condition', None)
+                    == tc.optimal
+                    and getattr(results.problem, 'lower_bound', None) is None
+                    and getattr(results.problem, 'upper_bound', None) is None
+                ):
+                    obj_val = value(obj.expr, exception=False)
+                    if obj_val is not None:
+                        # For a direct continuous optimal solve, primal==dual.
+                        prob.lower_bound = obj_val
+                        prob.upper_bound = obj_val
                 return False
             else:
                 config.logger.info(
