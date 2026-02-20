@@ -123,10 +123,10 @@ class TestMindtPy(unittest.TestCase):
                 )
                 self.check_optimal_solution(model)
 
-
         @unittest.skipIf(
             not short_circuit_subsolvers_available,
-            'Required subsolvers %s are not available' % (short_circuit_required_solvers,),
+            'Required subsolvers %s are not available'
+            % (short_circuit_required_solvers,),
         )
         class TestMindtPyShortCircuitNoDiscrete(unittest.TestCase):
             def test_no_discrete_decisions_short_circuit_loads_values(self):
