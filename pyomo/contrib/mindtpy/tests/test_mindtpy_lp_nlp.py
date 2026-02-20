@@ -177,6 +177,53 @@ class TestMindtPyShortCircuitNoDiscrete(unittest.TestCase):
         self.assertAlmostEqual(m.x.value, 1.0, places=4)
         self.assertAlmostEqual(obj_val, 1.0, places=4)
 
+def test_short_circuit_infeasible_nlp_returns_valid_results(self):
+    """Infeasible NLP short-circuit should return results, not load bad data."""
+    m = ConcreteModel()
+    m.x = Var(domain=NonNegativeReals)
+    m.y = Var(domain=Binary)
+    m.y.fix(0)
+
+    # Infeasible: x >= 0 AND x^2 <= -1
+    m.c1 = Constraint(expr=m.x >= 0)
+    m.c2 = Constraint(expr=m.x**2 <= -1)
+    m.objective = Objective(expr=m.x, sense=minimize)
+
+    with SolverFactory('mindtpy') as opt:
+        results = opt.solve(
+            m,
+            strategy='OA',
+            mip_solver=short_circuit_required_solvers[1],
+            nlp_solver=short_circuit_required_solvers[0],
+        )
+
+    self.assertIsNotNone(results)
+    self.assertEqual(
+        results.solver.termination_condition,
+        TerminationCondition.infeasible,
+    )
+
+def test_short_circuit_linear_model_uses_lp_path(self):
+    """Linear model with fixed discrete should use LP short-circuit."""
+    m = ConcreteModel()
+    m.x = Var(domain=NonNegativeReals)
+    m.y = Var(domain=Binary)
+    m.y.fix(0)
+
+    # Pure LP (polynomial degree 1)
+    m.c = Constraint(expr=m.x >= 1)
+    m.objective = Objective(expr=m.x, sense=minimize)
+
+    with SolverFactory('mindtpy') as opt:
+        results = opt.solve(
+            m,
+            strategy='OA',
+            mip_solver=short_circuit_required_solvers[1],
+            nlp_solver=short_circuit_required_solvers[0],
+        )
+
+    self.assertIsNotNone(results)
+    self.assertAlmostEqual(m.x.value, 1.0, places=4)
     @unittest.skipUnless(
         'gurobi_persistent' in available_mip_solvers,
         'gurobi_persistent solver is not available',
