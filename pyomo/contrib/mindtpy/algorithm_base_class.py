@@ -247,45 +247,45 @@ class _MindtPyAlgorithm:
 
     def model_is_valid(self):
         """
-            Check if the model requires the MindtPy MINLP decomposition algorithm.
+        Check if the model requires the MindtPy MINLP decomposition algorithm.
 
-            This method performs a structural check on the working model.
-            It determines if the problem is a true Mixed-Integer program.
-            If no discrete variables are present, it serves as a short-circuit.
-            In short-circuit cases, the problem is solved immediately as an LP or NLP.
+        This method performs a structural check on the working model.
+        It determines if the problem is a true Mixed-Integer program.
+        If no discrete variables are present, it serves as a short-circuit.
+        In short-circuit cases, the problem is solved immediately as an LP or NLP.
 
-            Returns
-            -------
-            bool
-                True if the model has discrete variables and requires MindtPy iteration.
-                False if the model is purely continuous (LP or NLP).
+        Returns
+        -------
+        bool
+            True if the model has discrete variables and requires MindtPy iteration.
+            False if the model is purely continuous (LP or NLP).
 
-            Notes
-            -----
-            The validity check follows a specific hierarchical logic:
+        Notes
+        -----
+        The validity check follows a specific hierarchical logic:
 
-            1. Discrete Variable Presence
-            The method first inspects ``MindtPy.discrete_variable_list``.
-            If this list is not empty, the function implicitly returns True.
-            This indicates the model is a valid MINLP for decomposition.
+        1. Discrete Variable Presence
+        The method first inspects ``MindtPy.discrete_variable_list``.
+        If this list is not empty, the function implicitly returns True.
+        This indicates the model is a valid MINLP for decomposition.
 
-            2. Continuous Model Handling (The "False" cases)
-            If the discrete variable list is empty, the model is "invalid" for MINLP.
-            The method then differentiates between LP and NLP structures.
+        2. Continuous Model Handling (The "False" cases)
+        If the discrete variable list is empty, the model is "invalid" for MINLP.
+        The method then differentiates between LP and NLP structures.
 
-            3. NLP Branch
-            The code checks the ``polynomial_degree`` of constraints and objectives.
-            If any degree is non-linear (not in ``mip_constraint_polynomial_degree``),
-            it is treated as a standard Nonlinear Program (NLP).
-            The ``config.nlp_solver`` is called to solve the original model directly.
+        3. NLP Branch
+        The code checks the ``polynomial_degree`` of constraints and objectives.
+        If any degree is non-linear (not in ``mip_constraint_polynomial_degree``),
+        it is treated as a standard Nonlinear Program (NLP).
+        The ``config.nlp_solver`` is called to solve the original model directly.
 
-            4. LP Branch
-            If all components are linear, it is treated as a Linear Program (LP).
-            The ``config.mip_solver`` is utilized for the solution process.
-            Solutions are loaded directly back into the ``original_model``.
+        4. LP Branch
+        If all components are linear, it is treated as a Linear Program (LP).
+        The ``config.mip_solver`` is utilized for the solution process.
+        Solutions are loaded directly back into the ``original_model``.
 
-            In both continuous cases, the method returns False to bypass the main loop.
-            This ensures MindtPy does not attempt decomposition on trivial continuous models.
+        In both continuous cases, the method returns False to bypass the main loop.
+        This ensures MindtPy does not attempt decomposition on trivial continuous models.
         """
         m = self.working_model
         MindtPy = m.MindtPy_utils
@@ -297,7 +297,6 @@ class _MindtPyAlgorithm:
             config.logger.info('Problem has no discrete decisions.')
 
             obj = next(m.component_data_objects(ctype=Objective, active=True))
-            
             if (
                 any(
                     c.body.polynomial_degree()
@@ -332,11 +331,28 @@ class _MindtPyAlgorithm:
                     results.solver.termination_condition
                 )
                 self.results.solver.message = getattr(results.solver, 'message', None)
-                obj_val = value(obj.expr, exception=False)
-                if obj_val is not None:
-                    # For a direct continuous solve, primal==dual at the solution.
-                    prob.lower_bound = obj_val
-                    prob.upper_bound = obj_val
+
+                # Prefer bound info from the direct NLP solver results if present
+                lb = getattr(results.problem, 'lower_bound', None)
+                ub = getattr(results.problem, 'upper_bound', None)
+                if lb is not None:
+                    prob.lower_bound = lb
+                if ub is not None:
+                    prob.upper_bound = ub
+
+                # If the solver reported an optimal termination but did not
+                # provide explicit bounds, fall back to using the objective value.
+                if (
+                    getattr(self.results.solver, 'termination_condition', None)
+                    == tc.optimal
+                    and getattr(results.problem, 'lower_bound', None) is None
+                    and getattr(results.problem, 'upper_bound', None) is None
+                ):
+                    obj_val = value(obj.expr, exception=False)
+                    if obj_val is not None:
+                        # For a direct continuous optimal solve, primal==dual.
+                        prob.lower_bound = obj_val
+                        prob.upper_bound = obj_val
                 return False
             else:
                 config.logger.info(
