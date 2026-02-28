@@ -627,3 +627,15 @@ def _add_ldbd_configs(CONFIG):
             description="Keyword arguments for the separation LP solver.", implicit=True
         ),
     )
+    CONFIG.declare(
+        "cuts_for_all_evaluated_points",
+        ConfigValue(
+            default=False,
+            domain=bool,
+            description=(
+                "If True, generate/refine cuts for every evaluated point in D "
+                "(MLD-BD style: one cut per point in point_info). "
+                "If False, only for anchor points (trial points proposed by master)."
+            ),
+        ),
+    )

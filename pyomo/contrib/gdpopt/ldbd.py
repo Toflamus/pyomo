@@ -531,6 +531,98 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
         if not point_info:
             return None, None
 
+        # Optional SciPy/HiGHS dual simplex path (for testing / lightweight LPs).
+        # This bypasses Pyomo's SolverFactory and solves the separation LP in
+        # matrix form using scipy.optimize.linprog(method='highs-ds').
+        if getattr(config, "separation_solver", None) == "scipy_highs_ds":
+            try:
+                from scipy.optimize import linprog
+            except Exception as err:
+                config.logger.debug(
+                    "SciPy is required for separation_solver='scipy_highs_ds' "
+                    "but could not be imported: %s",
+                    err,
+                )
+                return None, None
+
+            # Build A_ub x <= b_ub with x = [p_0, ..., p_{n-1}, alpha]
+            A_ub = []
+            b_ub = []
+            for pt, info in point_info.items():
+                pt = tuple(pt)
+                rhs = float(info.get("objective"))
+                if self.objective_sense is minimize:
+                    # p^T e + alpha <= f*(e)
+                    A_ub.append([float(pt[i]) for i in range(master_dim)] + [1.0])
+                    b_ub.append(rhs)
+                else:
+                    # p^T e + alpha >= f*(e)  <=>  -(p^T e + alpha) <= -f*(e)
+                    A_ub.append([-float(pt[i]) for i in range(master_dim)] + [-1.0])
+                    b_ub.append(-rhs)
+
+            if self.objective_sense is minimize:
+                # max p^T e_hat + alpha  <=>  min -(p^T e_hat + alpha)
+                c = [-float(anchor_point[i]) for i in range(master_dim)] + [-1.0]
+            else:
+                # min p^T e_hat + alpha
+                c = [float(anchor_point[i]) for i in range(master_dim)] + [1.0]
+
+            bounds = [(None, None)] * (master_dim + 1)
+
+            lp_args = dict(getattr(config, "separation_solver_args", {}))
+            # Mirror the legacy solver interface pattern used elsewhere: the user
+            # passes a dict of solver options under the 'options' key.
+            options = lp_args.get("options", {}) if isinstance(lp_args, dict) else {}
+            if not isinstance(options, dict):
+                options = {}
+            else:
+                options = dict(options)
+
+            if config.time_limit is not None:
+                elapsed = get_main_elapsed_time(self.timing)
+                remaining = max(config.time_limit - elapsed, 1)
+                options.setdefault("time_limit", float(remaining))
+
+            try:
+                res = linprog(
+                    c=c,
+                    A_ub=A_ub,
+                    b_ub=b_ub,
+                    bounds=bounds,
+                    method="highs-ds",
+                    options=options,
+                )
+            except Exception as err:
+                config.logger.debug(
+                    "SciPy separation LP failed for anchor %s: %s", anchor_point, err
+                )
+                return None, None
+
+            x = getattr(res, "x", None)
+            if x is None:
+                config.logger.debug(
+                    "SciPy separation LP returned no solution for anchor %s: %s",
+                    anchor_point,
+                    getattr(res, "message", None),
+                )
+                return None, None
+
+            # Accept optimal solutions, and also accept a best-effort incumbent
+            # when terminated by a limit (useful for quick experiments).
+            status = getattr(res, "status", None)
+            success = bool(getattr(res, "success", False))
+            if not success and status not in {1}:
+                config.logger.debug(
+                    "SciPy separation LP did not converge for anchor %s: %s",
+                    anchor_point,
+                    getattr(res, "message", None),
+                )
+                return None, None
+
+            p_vals = tuple(float(x[i]) for i in range(master_dim))
+            alpha_val = float(x[master_dim])
+            return p_vals, alpha_val
+
         sep = ConcreteModel(name="GDPopt_LDBD_SeparationLP")
         sep.p = Var(range(master_dim), domain=Reals)
         sep.alpha = Var(domain=Reals)
@@ -590,10 +682,15 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
         return p_vals, alpha_val
 
     def refine_cuts(self, config):
-        """Refine master cuts for all anchors.
+        """Refine master cuts for anchors or for all evaluated points in D.
 
-        For each anchor point, solve the separation LP and add or update the
-        corresponding refined cut in the master model.
+        If ``config.cuts_for_all_evaluated_points`` is False (default): for each
+        anchor point (trial point), solve the separation LP and add or update
+        the corresponding refined cut (original LDBD behavior).
+
+        If ``config.cuts_for_all_evaluated_points`` is True: for every point in
+        the data manager (all evaluated points in D), solve the separation LP
+        and add or update a cut (MLD-BD style: one cut per point in D).
 
         Parameters
         ----------
@@ -606,16 +703,19 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
         """
         master = getattr(self, "master", None)
 
-        # Only refine cuts for the trial-point anchors (initial point and
-        # subsequent master-proposed points). Separation constraints still use
-        # all evaluated points in D^k (via _solve_separation_lp).
-        anchors = list(getattr(self, "_anchors", []) or [])
+        # Choose which points get a cut: anchors only, or all evaluated points.
+        if getattr(config, "cuts_for_all_evaluated_points", False):
+            point_info = getattr(self.data_manager, "point_info", None) or {}
+            points_to_cut = [tuple(pt) for pt in point_info]
+        else:
+            # Original behavior: only trial-point anchors.
+            points_to_cut = list(getattr(self, "_anchors", []) or [])
 
-        for anchor in anchors:
-            anchor = tuple(anchor)
+        for point in points_to_cut:
+            point = tuple(point)
 
-            # Generate cuts for all the anchors, including infeasible points.
-            p_vals, alpha_val = self._solve_separation_lp(anchor, config)
+            # Generate cut for this point (separation LP uses all D in constraints).
+            p_vals, alpha_val = self._solve_separation_lp(point, config)
             if p_vals is None:
                 continue
 
@@ -627,13 +727,13 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
                 # Overestimator: z <= p^T e + alpha
                 expr = master.z <= cut_rhs
 
-            if anchor in self._cut_indices:
-                cut_idx = self._cut_indices[anchor]
+            if point in self._cut_indices:
+                cut_idx = self._cut_indices[point]
                 master.refined_cuts[cut_idx].set_value(expr)
             else:
                 cut_obj = master.refined_cuts.add(expr)
                 cut_idx = cut_obj.index()
-                self._cut_indices[anchor] = cut_idx
+                self._cut_indices[point] = cut_idx
 
     def any_termination_criterion_met(self, config):
         """Check whether any termination criterion is satisfied.

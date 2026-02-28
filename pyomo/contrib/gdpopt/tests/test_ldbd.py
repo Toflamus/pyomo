@@ -505,6 +505,52 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
         self.assertEqual(alpha_val, 3.0)
         mock_solver.solve.assert_called_once()
 
+    def test_solve_separation_lp_scipy_highs_ds_feasible_and_returns_values(self):
+        # SciPy is optional: skip if not installed.
+        pytest.importorskip("scipy")
+
+        s = GDP_LDBD_Solver()
+        # Set up objective_sense (required for separation LP constraints)
+        s.pyomo_results = mock.MagicMock()
+        s.pyomo_results.problem.sense = minimize
+
+        s.number_of_external_variables = 2
+        s.config.separation_solver = "scipy_highs_ds"
+        s.config.separation_solver_args = {"options": {}}
+
+        # Populate D^k with a few points. Keep objectives finite and varied.
+        s.data_manager.add(
+            (0, 0), feasible=True, objective=0.0, source="t", iteration_found=0
+        )
+        s.data_manager.add(
+            (1, 0), feasible=True, objective=1.0, source="t", iteration_found=0
+        )
+        s.data_manager.add(
+            (0, 1), feasible=True, objective=1.0, source="t", iteration_found=0
+        )
+
+        anchor = (1, 1)
+        # In the real LD-BD flow, the anchor point is always evaluated and
+        # therefore is part of D^k. Including it here avoids an unbounded
+        # separation LP in (p, alpha).
+        s.data_manager.add(
+            anchor, feasible=True, objective=2.0, source="t", iteration_found=0
+        )
+        p_vals, alpha_val = s._solve_separation_lp(anchor, s.config)
+
+        self.assertIsNotNone(p_vals)
+        self.assertIsNotNone(alpha_val)
+        self.assertEqual(len(p_vals), 2)
+        self.assertIsInstance(alpha_val, float)
+
+        # Verify separation constraints: p^T e + alpha <= f*(e) for all evaluated e
+        tol = 1e-7
+        for pt, info in s.data_manager.point_info.items():
+            pt = tuple(pt)
+            rhs = float(info.get("objective"))
+            lhs = p_vals[0] * pt[0] + p_vals[1] * pt[1] + alpha_val
+            self.assertLessEqual(lhs, rhs + tol)
+
     def test_refine_cuts_adds_and_updates_master_constraints(self):
         s = GDP_LDBD_Solver()
         # Set up objective_sense (required for master objective and cuts)
