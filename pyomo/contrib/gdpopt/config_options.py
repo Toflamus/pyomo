@@ -627,3 +627,15 @@ def _add_ldbd_configs(CONFIG):
             description="Keyword arguments for the separation LP solver.", implicit=True
         ),
     )
+    CONFIG.declare(
+        "add_no_good_cuts",
+        ConfigValue(
+            default=False,
+            domain=bool,
+            description="""
+            When True, LD-BD adds linear no-good cuts to the master problem
+            to exclude previously visited external-variable points.  The cuts
+            use the L1-norm linearisation from Bernal et al. (2020) and keep
+            the master as a MILP (no quadratic constraints).""",
+        ),
+    )

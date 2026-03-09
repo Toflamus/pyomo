@@ -1321,5 +1321,313 @@ class TestGDPoptLDBDUnit(unittest.TestCase):
         self.assertIn((2,), s._path)
 
 
+class TestNoGoodCuts(unittest.TestCase):
+    """Unit tests for the linear no-good cut feature in LD-BD."""
+
+    def _make_solver_with_master(self, ext_info=None, sense=minimize):
+        """Helper: build an LD-BD solver with a master model ready for cuts."""
+        s = GDP_LDBD_Solver()
+        s.pyomo_results = mock.MagicMock()
+        s.pyomo_results.problem.sense = sense
+
+        if ext_info is None:
+            ext_info = [
+                ExternalVarInfo(1, [], 5, 1),  # e[0] in [1, 5]
+                ExternalVarInfo(1, [], 4, 1),  # e[1] in [1, 4]
+            ]
+        s.data_manager.set_external_info(ext_info)
+        s._build_master(s.config)
+        return s
+
+    # ------------------------------------------------------------------
+    # _add_no_good_cut unit tests
+    # ------------------------------------------------------------------
+
+    def test_no_good_cut_all_middle(self):
+        """Point strictly between bounds produces w/v vars and 4 abs constraints per index."""
+        s = self._make_solver_with_master()
+        s.config.add_no_good_cuts = True
+        point = (3, 2)  # both strictly interior
+
+        s._add_no_good_cut(point, s.config)
+
+        blk = s.master.no_good_cut_0
+        # Both indices are in J^M, so w and v should have 2 entries each
+        self.assertEqual(len(list(blk.w)), 2)
+        self.assertEqual(len(list(blk.v)), 2)
+        # 4 constraints per J^M index = 8 abs constraints
+        self.assertEqual(len(list(blk.abs_cons)), 8)
+        # Exclusion constraint exists
+        self.assertIsNotNone(blk.exclusion)
+
+    def test_no_good_cut_at_lower_bound(self):
+        """Point at LB for all dims has no w/v vars (all in J^L)."""
+        s = self._make_solver_with_master()
+        point = (1, 1)  # both at lower bound
+
+        s._add_no_good_cut(point, s.config)
+
+        blk = s.master.no_good_cut_0
+        # No J^M indices: no w, v, or abs_cons
+        self.assertFalse(hasattr(blk, 'w'))
+        self.assertFalse(hasattr(blk, 'v'))
+        self.assertIsNotNone(blk.exclusion)
+
+    def test_no_good_cut_at_upper_bound(self):
+        """Point at UB for all dims has no w/v vars (all in J^U)."""
+        s = self._make_solver_with_master()
+        point = (5, 4)  # both at upper bound
+
+        s._add_no_good_cut(point, s.config)
+
+        blk = s.master.no_good_cut_0
+        self.assertFalse(hasattr(blk, 'w'))
+        self.assertIsNotNone(blk.exclusion)
+
+    def test_no_good_cut_mixed_bounds(self):
+        """Point with mixed LB/UB/middle indices classifies correctly."""
+        s = self._make_solver_with_master()
+        point = (1, 3)  # e[0] at LB (J^L), e[1] in middle (J^M)
+
+        s._add_no_good_cut(point, s.config)
+
+        blk = s.master.no_good_cut_0
+        # Only e[1] is in J^M
+        self.assertEqual(len(list(blk.w)), 1)
+        self.assertEqual(len(list(blk.v)), 1)
+        # 4 abs constraints for 1 J^M index
+        self.assertEqual(len(list(blk.abs_cons)), 4)
+
+    def test_multiple_no_good_cuts(self):
+        """Adding multiple no-good cuts creates separate blocks."""
+        s = self._make_solver_with_master()
+        s._add_no_good_cut((1, 1), s.config)
+        s._add_no_good_cut((3, 2), s.config)
+        s._add_no_good_cut((5, 4), s.config)
+
+        self.assertTrue(hasattr(s.master, 'no_good_cut_0'))
+        self.assertTrue(hasattr(s.master, 'no_good_cut_1'))
+        self.assertTrue(hasattr(s.master, 'no_good_cut_2'))
+        self.assertEqual(s._no_good_cut_count, 3)
+
+    def test_no_good_cut_big_m_constants(self):
+        """Verify tight Big-M constants M1 = 2(ebar - LB), M2 = 2(UB - ebar)."""
+        # Single external var with LB=1, UB=5, ebar=3
+        ext_info = [ExternalVarInfo(1, [], 5, 1)]
+        s = self._make_solver_with_master(ext_info=ext_info)
+        point = (3,)
+
+        s._add_no_good_cut(point, s.config)
+
+        blk = s.master.no_good_cut_0
+        # M1 = 2*(3-1) = 4, M2 = 2*(5-3) = 4
+        # Verify by checking constraint satisfaction at a known feasible point.
+        # Set e[0]=1, v[0]=0 => w should capture |1-3|=2
+        s.master.e[0].value = 1
+        blk.v[0].value = 0
+        blk.w[0].value = 2
+        # Constraint 3: w[0] <= e[0] - 3 + M1*(1-v[0]) = 1-3+4*1 = 2
+        # w[0]=2 <= 2 => satisfied (tight)
+        cons_list = list(blk.abs_cons.values())
+        # The third constraint body should evaluate; for an upper-bound
+        # constraint (body <= upper), body - upper should be <= 0 at tightness.
+        body_val = value(cons_list[2].body)
+        upper_val = value(cons_list[2].upper)
+        self.assertAlmostEqual(body_val, upper_val, places=10)
+
+    def test_no_good_cut_exclusion_constraint_correct(self):
+        """Verify the exclusion constraint correctly excludes the point."""
+        ext_info = [ExternalVarInfo(1, [], 3, 1)]
+        s = self._make_solver_with_master(ext_info=ext_info)
+
+        # Point at LB: exclusion = (e[0] - 1) >= 1
+        s._add_no_good_cut((1,), s.config)
+        blk = s.master.no_good_cut_0
+
+        # At e[0]=1 (the excluded point), LHS = 0, violates >= 1
+        s.master.e[0].value = 1
+        self.assertLess(value(blk.exclusion.body), 1)
+
+        # At e[0]=2, LHS = 1, satisfies >= 1
+        s.master.e[0].value = 2
+        self.assertGreaterEqual(value(blk.exclusion.body), 1)
+
+    # ------------------------------------------------------------------
+    # Config switch tests
+    # ------------------------------------------------------------------
+
+    def test_config_add_no_good_cuts_default_false(self):
+        """The add_no_good_cuts config defaults to False."""
+        s = GDP_LDBD_Solver()
+        self.assertFalse(s.config.add_no_good_cuts)
+
+    def test_config_add_no_good_cuts_can_be_enabled(self):
+        """The add_no_good_cuts config can be set to True."""
+        s = GDP_LDBD_Solver()
+        s.config.add_no_good_cuts = True
+        self.assertTrue(s.config.add_no_good_cuts)
+
+    # ------------------------------------------------------------------
+    # Integration with main loop
+    # ------------------------------------------------------------------
+
+    def test_solve_gdp_adds_no_good_cuts_when_enabled(self):
+        """When add_no_good_cuts=True, _add_no_good_cut is called in the loop."""
+        m = ConcreteModel()
+        m.x = Var(bounds=(0, 10))
+        m.obj = Objective(expr=m.x)
+        m.d1 = Disjunct()
+        m.d1.c = Constraint(expr=m.x >= 1)
+        m.d2 = Disjunct()
+        m.d2.c = Constraint(expr=m.x <= 0)
+        m.disj = Disjunction(expr=[m.d1, m.d2])
+
+        s = GDP_LDBD_Solver()
+        s.config.starting_point = (1,)
+        s.config.disjunction_list = [m.disj]
+        s.config.direction_norm = DirectionNorm.Linf
+        s.config.add_no_good_cuts = True
+        s.timing.main_timer_start_time = 0.0
+
+        s.pyomo_results = mock.MagicMock()
+        s.pyomo_results.solver = mock.MagicMock()
+        s.pyomo_results.solver.termination_condition = None
+        s.pyomo_results.problem.sense = minimize
+
+        def solve_point_side_effect(point, search_type, config):
+            s.data_manager.add(
+                tuple(point),
+                feasible=True,
+                objective=1.0,
+                source=str(search_type),
+                iteration_found=0,
+            )
+            return False, 1.0
+
+        solve_point_mock = mock.MagicMock(side_effect=solve_point_side_effect)
+        neighbor_search_mock = mock.MagicMock(return_value=True)
+        refine_mock = mock.MagicMock()
+        # Master returns a new point on first call, then terminates
+        solve_master_mock = mock.MagicMock(return_value=(0.0, (2,)))
+        update_bounds_mock = mock.MagicMock()
+        log_state_mock = mock.MagicMock()
+        add_ng_cut_mock = mock.MagicMock()
+
+        s.data_manager.get_best_solution = mock.MagicMock(return_value=((1,), 1.0))
+        s.data_manager.get_info = mock.MagicMock(
+            return_value={"objective": 1.0, "source": "Anchor"}
+        )
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                mock.patch.object(
+                    s, "any_termination_criterion_met", side_effect=[False, True]
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(s, "_solve_discrete_point", solve_point_mock)
+            )
+            stack.enter_context(
+                mock.patch.object(s, "neighbor_search", neighbor_search_mock)
+            )
+            stack.enter_context(mock.patch.object(s, "refine_cuts", refine_mock))
+            stack.enter_context(
+                mock.patch.object(s, "_solve_master", solve_master_mock)
+            )
+            stack.enter_context(
+                mock.patch.object(s, "_update_bounds_after_solve", update_bounds_mock)
+            )
+            stack.enter_context(
+                mock.patch.object(s, "_log_current_state", log_state_mock)
+            )
+            stack.enter_context(
+                mock.patch.object(s, "_add_no_good_cut", add_ng_cut_mock)
+            )
+
+            s._solve_gdp(m, s.config)
+
+        # Verify _add_no_good_cut was called with the current point
+        add_ng_cut_mock.assert_called_once()
+        call_args = add_ng_cut_mock.call_args
+        self.assertEqual(call_args[0][0], (1,))
+
+    def test_solve_gdp_skips_no_good_cuts_when_disabled(self):
+        """When add_no_good_cuts=False (default), _add_no_good_cut is never called."""
+        m = ConcreteModel()
+        m.x = Var(bounds=(0, 10))
+        m.obj = Objective(expr=m.x)
+        m.d1 = Disjunct()
+        m.d1.c = Constraint(expr=m.x >= 1)
+        m.d2 = Disjunct()
+        m.d2.c = Constraint(expr=m.x <= 0)
+        m.disj = Disjunction(expr=[m.d1, m.d2])
+
+        s = GDP_LDBD_Solver()
+        s.config.starting_point = (1,)
+        s.config.disjunction_list = [m.disj]
+        s.config.direction_norm = DirectionNorm.Linf
+        # add_no_good_cuts defaults to False
+        s.timing.main_timer_start_time = 0.0
+
+        s.pyomo_results = mock.MagicMock()
+        s.pyomo_results.solver = mock.MagicMock()
+        s.pyomo_results.solver.termination_condition = None
+        s.pyomo_results.problem.sense = minimize
+
+        def solve_point_side_effect(point, search_type, config):
+            s.data_manager.add(
+                tuple(point),
+                feasible=True,
+                objective=1.0,
+                source=str(search_type),
+                iteration_found=0,
+            )
+            return False, 1.0
+
+        solve_point_mock = mock.MagicMock(side_effect=solve_point_side_effect)
+        neighbor_search_mock = mock.MagicMock(return_value=True)
+        refine_mock = mock.MagicMock()
+        solve_master_mock = mock.MagicMock(return_value=(0.0, (2,)))
+        update_bounds_mock = mock.MagicMock()
+        log_state_mock = mock.MagicMock()
+        add_ng_cut_mock = mock.MagicMock()
+
+        s.data_manager.get_best_solution = mock.MagicMock(return_value=((1,), 1.0))
+        s.data_manager.get_info = mock.MagicMock(
+            return_value={"objective": 1.0, "source": "Anchor"}
+        )
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                mock.patch.object(
+                    s, "any_termination_criterion_met", side_effect=[False, True]
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(s, "_solve_discrete_point", solve_point_mock)
+            )
+            stack.enter_context(
+                mock.patch.object(s, "neighbor_search", neighbor_search_mock)
+            )
+            stack.enter_context(mock.patch.object(s, "refine_cuts", refine_mock))
+            stack.enter_context(
+                mock.patch.object(s, "_solve_master", solve_master_mock)
+            )
+            stack.enter_context(
+                mock.patch.object(s, "_update_bounds_after_solve", update_bounds_mock)
+            )
+            stack.enter_context(
+                mock.patch.object(s, "_log_current_state", log_state_mock)
+            )
+            stack.enter_context(
+                mock.patch.object(s, "_add_no_good_cut", add_ng_cut_mock)
+            )
+
+            s._solve_gdp(m, s.config)
+
+        # _add_no_good_cut should NOT have been called
+        add_ng_cut_mock.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

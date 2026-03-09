@@ -48,6 +48,10 @@ from pyomo.core.base import (
     value,
     ConcreteModel,
     Integers,
+    Binary,
+    Block,
+    Constraint,
+    NonNegativeReals,
 )
 
 
@@ -233,6 +237,10 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
             # Step 3: subproblem evaluation & neighborhood search
             self.neighbor_search(self.current_point, config)
 
+            # Optional: add no-good cut to exclude the current anchor point
+            if config.add_no_good_cuts:
+                self._add_no_good_cut(self.current_point, config)
+
             # Step 4: cut generation and refinement (refine-all)
             self.refine_cuts(config)
 
@@ -397,11 +405,112 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
         # Container for refined LD-BD cuts (updated in-place via registry).
         master.refined_cuts = ConstraintList()
 
+        # Counter for linear no-good cut blocks added to the master.
+        self._no_good_cut_count = 0
+
         # Store master + initialize registries used by the refinement logic.
         self.master = master
         self._cut_indices = {}
 
         return master
+
+    def _add_no_good_cut(self, point, config):
+        """Add a linear no-good cut to the master to exclude *point*.
+
+        Implements the L1-norm linearisation from Bernal et al. (2020):
+
+            sum_{j in J^L} (e_j - e_j^L)
+          + sum_{j in J^U} (e_j^U - e_j)
+          + sum_{j in J^M} w_j               >= 1
+
+        where for every j in J^M (the "middle" indices where the excluded
+        point value is strictly between its bounds) auxiliary variables
+        w_j >= 0 and v_j in {0,1} linearise |e_j - ebar_j| via Big-M:
+
+            -w_j <= e_j - ebar_j <= w_j
+            w_j <= e_j - ebar_j + M1_j (1 - v_j)
+            w_j <= ebar_j - e_j + M2_j v_j
+            w_j >= 0,  v_j in {0,1}
+
+        with tight Big-M constants M1_j = 2(ebar_j - e_j^L) and
+        M2_j = 2(e_j^U - ebar_j).
+
+        Parameters
+        ----------
+        point : tuple[int, ...]
+            External-variable point to exclude.
+        config : ConfigBlock
+            GDPopt configuration block (used for logging).
+
+        Returns
+        -------
+        None
+        """
+        master = self.master
+        point = tuple(point)
+        n_ext = len(point)
+        external_info = self.data_manager.external_var_info_list
+
+        # Classify indices into J^L, J^U, J^M
+        J_L = []
+        J_U = []
+        J_M = []
+        for j in range(n_ext):
+            lb_j = external_info[j].LB
+            ub_j = external_info[j].UB
+            ebar_j = point[j]
+            if ebar_j == lb_j:
+                J_L.append(j)
+            elif ebar_j == ub_j:
+                J_U.append(j)
+            else:
+                J_M.append(j)
+
+        # Create a named block on the master for this no-good cut
+        k = self._no_good_cut_count
+        blk_name = "no_good_cut_%d" % k
+        blk = Block(concrete=True)
+        master.add_component(blk_name, blk)
+
+        # Create w and v variables for J^M indices
+        if J_M:
+            blk.w = Var(J_M, domain=NonNegativeReals)
+            blk.v = Var(J_M, domain=Binary)
+
+            blk.abs_cons = ConstraintList()
+            for j in J_M:
+                ebar_j = point[j]
+                lb_j = external_info[j].LB
+                ub_j = external_info[j].UB
+                M1_j = 2 * (ebar_j - lb_j)
+                M2_j = 2 * (ub_j - ebar_j)
+
+                # -w_j <= e_j - ebar_j  =>  e_j - ebar_j + w_j >= 0
+                blk.abs_cons.add(master.e[j] - ebar_j + blk.w[j] >= 0)
+                # e_j - ebar_j <= w_j  =>  e_j - ebar_j - w_j <= 0
+                blk.abs_cons.add(master.e[j] - ebar_j - blk.w[j] <= 0)
+                # w_j <= e_j - ebar_j + M1_j (1 - v_j)
+                blk.abs_cons.add(
+                    blk.w[j] <= master.e[j] - ebar_j + M1_j * (1 - blk.v[j])
+                )
+                # w_j <= ebar_j - e_j + M2_j v_j
+                blk.abs_cons.add(
+                    blk.w[j] <= ebar_j - master.e[j] + M2_j * blk.v[j]
+                )
+
+        # Build the main exclusion constraint
+        lhs = 0
+        for j in J_L:
+            lhs += master.e[j] - external_info[j].LB
+        for j in J_U:
+            lhs += external_info[j].UB - master.e[j]
+        for j in J_M:
+            lhs += blk.w[j]
+
+        blk.exclusion = Constraint(expr=lhs >= 1)
+
+        self._no_good_cut_count += 1
+        config.logger.debug("Added no-good cut #%d excluding point %s", k, point)
 
     def _solve_master(self, config):
         """Solve the LD-BD master MILP.
