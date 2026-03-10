@@ -237,9 +237,11 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
             # Step 3: subproblem evaluation & neighborhood search
             self.neighbor_search(self.current_point, config)
 
-            # Optional: add no-good cut to exclude the current anchor point
+            # Optional: add no-good cut to exclude infeasible anchor points only
             if config.add_no_good_cuts:
-                self._add_no_good_cut(self.current_point, config)
+                point_info = self.data_manager.get_info(self.current_point)
+                if point_info is not None and not point_info.get("feasible", False):
+                    self._add_no_good_cut(self.current_point, config)
 
             # Step 4: cut generation and refinement (refine-all)
             self.refine_cuts(config)
