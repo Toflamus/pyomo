@@ -603,6 +603,30 @@ def _add_discrete_algorithm_configs(CONFIG):
             description="Value to use for infeasible points instead of infinity.",
         ),
     )
+    CONFIG.declare(
+        'preprocessing',
+        ConfigValue(
+            default=True,
+            domain=bool,
+            description=(
+                "Enable two-phase feasibility preprocessing. The same algorithm "
+                "(LD-SDA or LD-BD) is run first with I1 (logical infeasibility) "
+                "as the objective, then with I2 (constraint infeasibility), before "
+                "the main optimisation. If either phase cannot reach zero, an error "
+                "is raised and the user should provide a different starting_point."
+            ),
+        ),
+    )
+    CONFIG.declare(
+        'preprocessing_feasibility_tol',
+        ConfigValue(
+            default=1e-6,
+            domain=NonNegativeFloat,
+            description=(
+                "Tolerance for declaring a point feasible during preprocessing."
+            ),
+        ),
+    )
 
 
 def _add_ldsda_configs(CONFIG):

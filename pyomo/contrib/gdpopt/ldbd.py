@@ -190,8 +190,74 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
         if not hasattr(self.working_model_util_block, "BigM"):
             self.working_model_util_block.BigM = Suffix()
         self._log_header(logger)
-        # Step 1
-        # Solve/register the initial point
+
+        tol = getattr(config, 'preprocessing_feasibility_tol', 1e-6)
+
+        if getattr(config, 'preprocessing', True):
+            # ------------------------------------------------------------------
+            # Phase 1: minimise I1 (logical infeasibility) — solver-free.
+            # Runs the full LD-BD loop (master + subproblem + cuts) with the
+            # I1 measure as the objective.
+            # ------------------------------------------------------------------
+            logger.info("LD-BD Preprocessing Phase 1: minimising I1 (logical infeasibility)")
+            self._evaluation_mode = "I1"
+            self._preprocess_best = float("inf")
+            self._reset_for_new_phase(config)
+            _ = self._solve_discrete_point(
+                self.current_point, SearchPhase.PREPROCESS_I1, config
+            )
+            self._run_bd_loop(config)
+
+            best_i1 = self.current_obj
+            if best_i1 > tol:
+                logger.error(
+                    "LD-BD Preprocessing Phase 1 could not find a logically "
+                    "feasible starting point (best I1 = %.6g). "
+                    "Please provide a different starting_point.",
+                    best_i1,
+                )
+                return
+
+            logger.info(
+                "Phase 1 complete. Feasible point found: %s (I1 = %.6g)",
+                self.current_point, best_i1,
+            )
+
+            # ------------------------------------------------------------------
+            # Phase 2: minimise I2 (constraint infeasibility) — NLP-based.
+            # Points with I1 > 0 automatically receive an infinity penalty so
+            # only logically feasible neighbors are explored.
+            # ------------------------------------------------------------------
+            logger.info("LD-BD Preprocessing Phase 2: minimising I2 (constraint infeasibility)")
+            self._evaluation_mode = "I2"
+            self._preprocess_best = float("inf")
+            self._reset_for_new_phase(config)
+            _ = self._solve_discrete_point(
+                self.current_point, SearchPhase.PREPROCESS_I2, config
+            )
+            self._run_bd_loop(config)
+
+            best_i2 = self.current_obj
+            if best_i2 > tol:
+                logger.error(
+                    "LD-BD Preprocessing Phase 2 could not find a constraint-"
+                    "feasible starting point (best I2 = %.6g). "
+                    "Please provide a different starting_point.",
+                    best_i2,
+                )
+                return
+
+            logger.info(
+                "Phase 2 complete. Feasible point found: %s (I2 = %.6g)",
+                self.current_point, best_i2,
+            )
+
+        # ------------------------------------------------------------------
+        # Phase 3 (main optimisation): reset to normal mode and run LD-BD.
+        # ------------------------------------------------------------------
+        self._evaluation_mode = None
+        self._reset_for_new_phase(config)
+        # Step 1: Solve/register the initial point
         _ = self._solve_discrete_point(self.current_point, SearchPhase.INITIAL, config)
 
         # Check if the initial point is feasible. If not, we cannot proceed.
@@ -199,15 +265,24 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
         if initial_info is None or initial_info.get("feasible", False) is False:
             logger.warning("Initial point is infeasible.")
 
-        # Build the master (Step 5 model) once we know the external variable
-        # structure.
-        self._build_master(config)
+        self._run_bd_loop(config)
 
-        # Anchors are the *trial points* proposed by the master (including the
-        # initial point). Cuts are refined for these anchors using
-        # all evaluated points in D^k as separation constraints.
+    def _run_bd_loop(self, config):
+        """Run one full LD-BD master-subproblem-cuts loop.
+
+        Used for all three phases (I1, I2, and main optimisation).  The only
+        difference between phases is ``self._evaluation_mode`` and the
+        objective stored in the data manager.
+
+        The method mutates ``self.current_point``, ``self._anchors``, and
+        ``self._path``; it updates ``self.current_obj`` after each phase.
+        """
+        logger = config.logger
+
+        # Build the master MILP (fresh cuts for this phase).
+        self._build_master(config)
         self._anchors = [tuple(self.current_point)]
-        self._path = [tuple(self.current_point)]
+
         # Main LDBD Loop
         while True:
             # Termination check (time / iteration / bounds)
@@ -321,13 +396,22 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
                 self.pyomo_results.solver.termination_condition = tc.optimal
                 break
 
-        # Ensure the final incumbent corresponds to the best feasible point.
-        # If the cache is unavailable (e.g., in unit tests that mock subproblem
-        # solves), we skip any attempt to re-solve here to avoid surprising
-        # side effects.
-        best_point, _ = self.data_manager.get_best_solution(sense=self.objective_sense)
-        if best_point is not None:
-            self._load_incumbent_from_solution_cache(best_point, logger=logger)
+        # After the loop, expose the best value found to the caller.
+        if getattr(self, '_evaluation_mode', None) in ("I1", "I2"):
+            # Preprocessing phase: best infeasibility measure is tracked
+            # separately; expose it via current_obj so _solve_gdp can check it.
+            best_point, best_obj = self.data_manager.get_best_solution(sense=minimize)
+            self.current_obj = best_obj if best_obj is not None else float("inf")
+            if best_point is not None:
+                self.current_point = best_point
+        else:
+            # Main optimisation: ensure final incumbent corresponds to the best
+            # feasible point.  Skip if cache is unavailable (e.g. unit tests).
+            best_point, _ = self.data_manager.get_best_solution(
+                sense=self.objective_sense
+            )
+            if best_point is not None:
+                self._load_incumbent_from_solution_cache(best_point, logger=logger)
 
     def _build_master(self, config):
         """Construct the LD-BD master MILP.

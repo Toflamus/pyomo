@@ -28,7 +28,7 @@ from pyomo.contrib.gdpopt.config_options import (
 )
 from pyomo.contrib.gdpopt.nlp_initialization import restore_vars_to_original_values
 from pyomo.contrib.gdpopt.util import get_main_elapsed_time
-from pyomo.core import maximize, Suffix, TransformationFactory
+from pyomo.core import maximize, minimize, Suffix, TransformationFactory
 from pyomo.opt import SolverFactory
 from pyomo.opt import TerminationCondition as tc
 
@@ -128,15 +128,106 @@ class GDP_LDSDA_Solver(_GDPoptDiscreteAlgorithm):
         if not hasattr(self.working_model_util_block, 'BigM'):
             self.working_model_util_block.BigM = Suffix()
         self._log_header(logger)
-        # Solve the initial point
+
+        tol = getattr(config, 'preprocessing_feasibility_tol', 1e-6)
+
+        if getattr(config, 'preprocessing', True):
+            # ------------------------------------------------------------------
+            # Phase 1: minimise logical infeasibility (I1) — solver-free.
+            # Runs the full LD-SDA loop (neighbor search + line search) with
+            # the I1 measure as the objective.
+            # ------------------------------------------------------------------
+            logger.info("LD-SDA Preprocessing Phase 1: minimising I1 (logical infeasibility)")
+            self._evaluation_mode = "I1"
+            self._preprocess_best = float("inf")
+            self._reset_for_new_phase(config)
+            _, self.current_obj = self._solve_discrete_point(
+                self.current_point, SearchPhase.PREPROCESS_I1, config
+            )
+            self._run_search_loop(config)
+
+            best_i1 = self.current_obj
+            if best_i1 > tol:
+                logger.error(
+                    "LD-SDA Preprocessing Phase 1 could not find a logically "
+                    "feasible starting point (best I1 = %.6g). "
+                    "Please provide a different starting_point.",
+                    best_i1,
+                )
+                return False
+
+            logger.info(
+                "Phase 1 complete. Feasible point found: %s (I1 = %.6g)",
+                self.current_point, best_i1,
+            )
+
+            # ------------------------------------------------------------------
+            # Phase 2: minimise constraint infeasibility (I2) — NLP-based.
+            # Phase 2 automatically enforces I1 = 0 for every point evaluated
+            # (points with I1 > 0 receive an infinity penalty and are skipped).
+            # ------------------------------------------------------------------
+            logger.info("LD-SDA Preprocessing Phase 2: minimising I2 (constraint infeasibility)")
+            self._evaluation_mode = "I2"
+            self._preprocess_best = float("inf")
+            self._reset_for_new_phase(config)
+            _, self.current_obj = self._solve_discrete_point(
+                self.current_point, SearchPhase.PREPROCESS_I2, config
+            )
+            self._run_search_loop(config)
+
+            best_i2 = self.current_obj
+            if best_i2 > tol:
+                logger.error(
+                    "LD-SDA Preprocessing Phase 2 could not find a constraint-"
+                    "feasible starting point (best I2 = %.6g). "
+                    "Please provide a different starting_point.",
+                    best_i2,
+                )
+                return False
+
+            logger.info(
+                "Phase 2 complete. Feasible point found: %s (I2 = %.6g)",
+                self.current_point, best_i2,
+            )
+
+        # ------------------------------------------------------------------
+        # Phase 3 (main optimisation): reset to normal mode and run LD-SDA.
+        # ------------------------------------------------------------------
+        self._evaluation_mode = None
+        self._reset_for_new_phase(config)
         _, self.current_obj = self._solve_discrete_point(
             self.current_point, SearchPhase.INITIAL, config
         )
+        locally_optimal = self._run_search_loop(config)
 
-        # Initialize path tracking with the starting point
-        self._path = [tuple(self.current_point)]
+        # Log the search path at termination
+        logger.info("Search path: %s", " -> ".join(map(str, self._path)))
 
-        # Main loop
+        # Stamp locallyOptimal termination if appropriate
+        if (
+            locally_optimal
+            and hasattr(self, "pyomo_results")
+            and getattr(self.pyomo_results.solver, "termination_condition", tc.unknown)
+            == tc.unknown
+        ):
+            self.pyomo_results.solver.termination_condition = tc.locallyOptimal
+
+        return locally_optimal
+
+    def _run_search_loop(self, config):
+        """Run the LD-SDA neighbor-search + line-search loop until locally optimal.
+
+        Used for all three phases (I1, I2, and main optimisation): the only
+        difference between phases is ``self._evaluation_mode``.
+
+        After the loop, ``self.current_obj`` is set to the best value found
+        in the current phase so the caller can check convergence.
+
+        Returns
+        -------
+        bool
+            ``True`` if the current point is locally optimal at termination.
+        """
         locally_optimal = False
         while not locally_optimal:
             self.iteration += 1
@@ -146,18 +237,12 @@ class GDP_LDSDA_Solver(_GDPoptDiscreteAlgorithm):
             if not locally_optimal:
                 self.line_search(config)
 
-        # Log the search path at termination
-        logger.info("Search path: %s", " -> ".join(map(str, self._path)))
-
-        # Stamp locallyOptimal termination if appropriate
-
-        if (
-            locally_optimal
-            and hasattr(self, "pyomo_results")
-            and getattr(self.pyomo_results.solver, "termination_condition", tc.unknown)
-            == tc.unknown
-        ):
-            self.pyomo_results.solver.termination_condition = tc.locallyOptimal
+        # Expose the best value found in this phase.
+        if getattr(self, '_evaluation_mode', None) in ("I1", "I2"):
+            best_point, best_obj = self.data_manager.get_best_solution(sense=minimize)
+            self.current_obj = best_obj if best_obj is not None else float("inf")
+            if best_point is not None:
+                self.current_point = best_point
 
         return locally_optimal
 

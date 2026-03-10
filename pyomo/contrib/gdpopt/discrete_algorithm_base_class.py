@@ -36,6 +36,10 @@ from pyomo.contrib.gdpopt.create_oa_subproblems import (
 )
 
 from pyomo.contrib.gdpopt.discrete_search_enums import DirectionNorm, SearchPhase
+from pyomo.contrib.gdpopt.preprocess import (
+    evaluate_logical_infeasibility,
+    measure_constraint_violation,
+)
 
 
 class DiscreteDataManager:
@@ -303,6 +307,10 @@ class _GDPoptDiscreteAlgorithm(_GDPoptAlgorithm):
         """
         super().__init__(**kwds)
         self.data_manager = DiscreteDataManager()
+        # Preprocessing evaluation mode: None (normal), "I1", or "I2".
+        self._evaluation_mode = None
+        # Best infeasibility value seen in the current preprocessing phase.
+        self._preprocess_best = float("inf")
 
     def _ensure_dae_compatibility(self, model, logger=None):
         return self._reconstruct_disjunct_constraints_if_dae(model, logger)
@@ -624,16 +632,18 @@ class _GDPoptDiscreteAlgorithm(_GDPoptAlgorithm):
             point, search_type, config
         )
 
-        # 4. Normalize result and register the visit
-        # NOTE: Not all discrete algorithms define an explicit infeasibility
-        # penalty. When available, infinity_output is used as a finite penalty.
+        # 4. Normalize result and register the visit.
+        # During preprocessing (I1/I2 modes), infeasibility measures are
+        # always non-negative values to minimise; use +infinity_output as
+        # penalty regardless of the original problem's sense.
         if primal_bound is None:
             feasible = False
             if hasattr(config, 'infinity_output'):
-                # Use sign-aware penalty: positive for minimization, negative for maximization.
-                # This ensures infeasible points always look bad regardless of optimization sense.
-                penalty_sign = 1 if self.objective_sense == minimize else -1
-                objective = penalty_sign * config.infinity_output
+                if getattr(self, '_evaluation_mode', None) in ("I1", "I2"):
+                    objective = config.infinity_output
+                else:
+                    penalty_sign = 1 if self.objective_sense == minimize else -1
+                    objective = penalty_sign * config.infinity_output
             else:
                 objective = float('inf')
         else:
@@ -712,7 +722,44 @@ class _GDPoptDiscreteAlgorithm(_GDPoptAlgorithm):
                         'contrib.deactivate_trivial_constraints'
                     ).apply_to(subproblem, tmp=False, ignore_infeasible=False)
             except InfeasibleConstraintException:
+                # FBBT detected infeasibility.
+                # In I1 mode, return a large finite I1 value rather than None.
+                if getattr(self, '_evaluation_mode', None) == "I1":
+                    i1_val = float("inf")
+                    primal_improved = i1_val < self._preprocess_best
+                    if primal_improved:
+                        self._preprocess_best = i1_val
+                    return primal_improved, i1_val
                 return False, None
+
+            # ------------------------------------------------------------------
+            # Preprocessing mode branches: evaluate I1 or I2 instead of the
+            # original objective.  Both modes share the fix/clone/transform/
+            # presolve steps above; they diverge here.
+            # ------------------------------------------------------------------
+            evaluation_mode = getattr(self, '_evaluation_mode', None)
+
+            if evaluation_mode == "I1":
+                # Phase 1: measure logical infeasibility from FBBT bounds.
+                # No NLP solve is needed.
+                tol = getattr(config, 'preprocessing_feasibility_tol', 1e-6)
+                i1_val = evaluate_logical_infeasibility(subproblem, tol=tol)
+                primal_improved = i1_val < self._preprocess_best
+                if primal_improved:
+                    self._preprocess_best = i1_val
+                return primal_improved, i1_val
+
+            if evaluation_mode == "I2":
+                # Phase 2: first confirm I1 = 0 (logical propositions from
+                # Phase 1 must hold), then solve the NLP and measure constraint
+                # violation.
+                tol = getattr(config, 'preprocessing_feasibility_tol', 1e-6)
+                i1_check = evaluate_logical_infeasibility(subproblem, tol=tol)
+                if i1_check > tol:
+                    # Logically infeasible → I2 = infinity penalty
+                    return False, None
+                # Fall through to the normal NLP solve below; we will intercept
+                # the result afterward (see _I2_mode flag handling below).
 
             # TODO： After Mindtpy supports solving MIPs and NLPs, we can route to the appropriate solver instead of always calling Mindtpy for the MINLP subproblems. This will likely require some refactoring of the current solve_GDP_subproblem method. Issue https://github.com/Pyomo/pyomo/issues/3855 tracks this future enhancement.
             def _classify_algebraic_model(model):
@@ -830,8 +877,29 @@ class _GDPoptDiscreteAlgorithm(_GDPoptAlgorithm):
                 )
 
             config.call_after_subproblem_solve(self, subproblem, sub_util)
-            # Use the results from the solver we actually ran
             result = sub_results
+
+            # ------------------------------------------------------------------
+            # I2 mode: measure constraint violation from the primal solution
+            # instead of reading the original objective.
+            # ------------------------------------------------------------------
+            if getattr(self, '_evaluation_mode', None) == "I2":
+                tol = getattr(config, 'preprocessing_feasibility_tol', 1e-6)
+                term_cond = getattr(
+                    getattr(result, 'solver', None), 'termination_condition', None
+                )
+                if term_cond not in {
+                    tc.optimal, tc.feasible, tc.globallyOptimal,
+                    tc.locallyOptimal, tc.maxTimeLimit,
+                    tc.maxIterations, tc.maxEvaluations,
+                }:
+                    # Solver completely failed — treat as I2 = infinity
+                    return False, None
+                i2_val = measure_constraint_violation(subproblem, tol=tol)
+                primal_improved = i2_val < self._preprocess_best
+                if primal_improved:
+                    self._preprocess_best = i2_val
+                return primal_improved, i2_val
 
             primal_improved = self._handle_subproblem_result(
                 result, subproblem, external_var_value, config, search_type
@@ -980,6 +1048,33 @@ class _GDPoptDiscreteAlgorithm(_GDPoptAlgorithm):
                 valid_neighbors.append((neighbor, direction))
 
         return valid_neighbors
+
+    def _reset_for_new_phase(self, config):
+        """Reset solver state between preprocessing phases and main solve.
+
+        Clears all visited-point caches, resets the iteration counter, and
+        resets primal/dual bounds.  ``self.current_point`` is preserved so
+        the next phase starts from the best point found so far.
+
+        Parameters
+        ----------
+        config : ConfigBlock
+            GDPopt configuration (used to re-initialise external-var info).
+        """
+        self.iteration = 0
+        self._preprocess_best = float("inf")
+
+        # Reset bounds to uninformative values.
+        self.LB = float("-inf")
+        self.UB = float("inf")
+
+        # Clear the data manager (visited points, caches).
+        self.data_manager = DiscreteDataManager(
+            self.working_model_util_block.external_var_info_list
+        )
+        # Re-seed with the current (best) starting point so algorithms know
+        # the iteration-0 anchor without re-solving.
+        self._path = [tuple(self.current_point)]
 
     def _handle_subproblem_result(
         self, subproblem_result, subproblem, external_var_value, config, search_type

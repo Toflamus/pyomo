@@ -42,6 +42,10 @@ class SearchPhase(str, enum.Enum):
     NEIGHBOR = "Neighbor search"
     LINE = "Line search"
 
+    # Preprocessing (shared)
+    PREPROCESS_I1 = "Preprocess (I1)"
+    PREPROCESS_I2 = "Preprocess (I2)"
+
     # LD-BD specific
     ANCHOR = "Anchor"
     NEIGHBOR_EVAL = "Neighbor"
