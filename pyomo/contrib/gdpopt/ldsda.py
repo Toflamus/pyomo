@@ -70,12 +70,15 @@ class GDP_LDSDA_Solver(_GDPoptDiscreteAlgorithm):
         return super().solve(model, **kwds)
 
     def _log_citation(self, config):
-        config.logger.info("\n" + """- LDSDA algorithm:
+        config.logger.info(
+            "\n"
+            + """- LDSDA algorithm:
         Bernal DE, Ovalle D, Liñán DA, Ricardez-Sandoval LA, Gómez JM, Grossmann IE.
         Process Superstructure Optimization through Discrete Steepest Descent Optimization: a GDP Analysis and Applications in Process Intensification.
         Computer Aided Chemical Engineering 2022 Jan 1 (Vol. 49, pp. 1279-1284). Elsevier.
         https://doi.org/10.1016/B978-0-323-85159-6.50213-X
-        """.strip())
+        """.strip()
+        )
 
     def _solve_gdp(self, model, config):
         """
@@ -212,19 +215,31 @@ class GDP_LDSDA_Solver(_GDPoptDiscreteAlgorithm):
         is_minimization = self.objective_sense != maximize
 
         # Loop through all possible directions (neighbors)
+        feasible_neighbors_count = 0
+        evaluated_neighbors_count = 0
+
         for direction in self.directions:
             # Generate a neighbor point by applying the direction to the current point
             neighbor = tuple(map(sum, zip(self.current_point, direction)))
 
             # Check if the neighbor is valid
             if self._check_valid_neighbor(neighbor):
+                evaluated_neighbors_count += 1
                 # Solve the subproblem for this neighbor
                 primal_improved, primal_bound = self._solve_discrete_point(
                     neighbor, SearchPhase.NEIGHBOR, config
                 )
 
-                if primal_bound is None:
+                # Check feasibility using data manager (more reliable than simply checking primal_bound value)
+                neighbor_info = self.data_manager.get_info(neighbor)
+                is_feasible = False
+                if neighbor_info is not None:
+                    is_feasible = neighbor_info.get('feasible', False)
+
+                if primal_bound is None or not is_feasible:
                     continue
+
+                feasible_neighbors_count += 1
 
                 dist = sum((x - y) ** 2 for x, y in zip(neighbor, self.current_point))
 
@@ -246,6 +261,12 @@ class GDP_LDSDA_Solver(_GDPoptDiscreteAlgorithm):
                     self.best_direction = direction
                     best_dist = dist
                     locally_optimal = False
+
+        if evaluated_neighbors_count > 0 and feasible_neighbors_count == 0:
+            config.logger.info(
+                "LDSDA stopping: All valid neighbors were found to be infeasible."
+            )
+            locally_optimal = True
 
         # Move to the best neighbor if an improvement was found
         if not locally_optimal:
