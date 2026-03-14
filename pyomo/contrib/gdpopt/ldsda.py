@@ -316,7 +316,7 @@ class GDP_LDSDA_Solver(_GDPoptDiscreteAlgorithm):
 
                 # Check feasibility using data manager (more reliable than simply checking primal_bound value)
                 neighbor_info = self.data_manager.get_info(neighbor)
-                is_feasible = neighbor_info.get('feasible', False)
+                is_feasible = neighbor_info.get('feasible', False) if neighbor_info is not None else False
                 
                 # Check explicit None or infeasibility flag
                 if primal_bound is None or not is_feasible:
