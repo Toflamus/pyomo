@@ -210,13 +210,14 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
 
             best_i1 = self.current_obj
             if best_i1 > tol:
-                logger.error(
+                logger.warning(
                     "LD-BD Preprocessing Phase 1 could not find a logically "
                     "feasible starting point (best I1 = %.6g). "
-                    "Please provide a different starting_point.",
+                    "Proceeding to next phase with best found point.",
                     best_i1,
                 )
-                return
+                # Continue instead of returning False
+                # return
 
             logger.info(
                 "Phase 1 complete. Feasible point found: %s (I1 = %.6g)",
@@ -239,13 +240,14 @@ class GDP_LDBD_Solver(_GDPoptDiscreteAlgorithm):
 
             best_i2 = self.current_obj
             if best_i2 > tol:
-                logger.error(
+                logger.warning(
                     "LD-BD Preprocessing Phase 2 could not find a constraint-"
                     "feasible starting point (best I2 = %.6g). "
-                    "Please provide a different starting_point.",
+                    "Proceeding to Phase 3 with best found point.",
                     best_i2,
                 )
-                return
+                # Continue instead of returning
+                # return
 
             logger.info(
                 "Phase 2 complete. Feasible point found: %s (I2 = %.6g)",

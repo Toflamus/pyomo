@@ -148,13 +148,14 @@ class GDP_LDSDA_Solver(_GDPoptDiscreteAlgorithm):
 
             best_i1 = self.current_obj
             if best_i1 > tol:
-                logger.error(
+                logger.warning(
                     "LD-SDA Preprocessing Phase 1 could not find a logically "
                     "feasible starting point (best I1 = %.6g). "
-                    "Please provide a different starting_point.",
+                    "Proceeding to next phase with best found point.",
                     best_i1,
                 )
-                return False
+                # Continue instead of returning False
+                # return False
 
             logger.info(
                 "Phase 1 complete. Feasible point found: %s (I1 = %.6g)",
@@ -177,13 +178,14 @@ class GDP_LDSDA_Solver(_GDPoptDiscreteAlgorithm):
 
             best_i2 = self.current_obj
             if best_i2 > tol:
-                logger.error(
+                logger.warning(
                     "LD-SDA Preprocessing Phase 2 could not find a constraint-"
                     "feasible starting point (best I2 = %.6g). "
-                    "Please provide a different starting_point.",
+                    "Proceeding to Phase 3 with best found point.",
                     best_i2,
                 )
-                return False
+                # Continue instead of returning False
+                # return False
 
             logger.info(
                 "Phase 2 complete. Feasible point found: %s (I2 = %.6g)",
@@ -297,19 +299,30 @@ class GDP_LDSDA_Solver(_GDPoptDiscreteAlgorithm):
         is_minimization = self.objective_sense != maximize
 
         # Loop through all possible directions (neighbors)
+        feasible_neighbors_count = 0
+        evaluated_neighbors_count = 0
+        
         for direction in self.directions:
             # Generate a neighbor point by applying the direction to the current point
             neighbor = tuple(map(sum, zip(self.current_point, direction)))
 
             # Check if the neighbor is valid
             if self._check_valid_neighbor(neighbor):
+                evaluated_neighbors_count += 1
                 # Solve the subproblem for this neighbor
                 primal_improved, primal_bound = self._solve_discrete_point(
                     neighbor, SearchPhase.NEIGHBOR, config
                 )
 
-                if primal_bound is None:
+                # Check feasibility using data manager (more reliable than simply checking primal_bound value)
+                neighbor_info = self.data_manager.get_info(neighbor)
+                is_feasible = neighbor_info.get('feasible', False)
+                
+                # Check explicit None or infeasibility flag
+                if primal_bound is None or not is_feasible:
                     continue
+                
+                feasible_neighbors_count += 1
 
                 dist = sum((x - y) ** 2 for x, y in zip(neighbor, self.current_point))
 
@@ -331,6 +344,10 @@ class GDP_LDSDA_Solver(_GDPoptDiscreteAlgorithm):
                     self.best_direction = direction
                     best_dist = dist
                     locally_optimal = False
+        
+        if evaluated_neighbors_count > 0 and feasible_neighbors_count == 0:
+             config.logger.info("LDSDA stopping: All valid neighbors were found to be infeasible.")
+             locally_optimal = True
 
         # Move to the best neighbor if an improvement was found
         if not locally_optimal:

@@ -311,6 +311,8 @@ class _GDPoptDiscreteAlgorithm(_GDPoptAlgorithm):
         self._evaluation_mode = None
         # Best infeasibility value seen in the current preprocessing phase.
         self._preprocess_best = float("inf")
+        # Cache for globally infeasible points (persists across phases)
+        self.global_infeasible_points = set()
 
     def _ensure_dae_compatibility(self, model, logger=None):
         return self._reconstruct_disjunct_constraints_if_dae(model, logger)
@@ -609,6 +611,20 @@ class _GDPoptDiscreteAlgorithm(_GDPoptAlgorithm):
         numerical issues in the master problem while still clearly
         distinguishing infeasible points from feasible ones.
         """
+        # 0. Check global infeasibility cache first (Requirement 3)
+        if hasattr(self, "global_infeasible_points") and point in self.global_infeasible_points:
+            if hasattr(config, 'infinity_output'):
+                if getattr(self, '_evaluation_mode', None) in ("I1", "I2"):
+                    objective = config.infinity_output
+                else:
+                    penalty_sign = 1 if self.objective_sense == minimize else -1
+                    objective = penalty_sign * config.infinity_output
+            else:
+                objective = float('inf')
+            # Check if we should log skipping? self.data_manager.is_visited might be false here because reset cleared it.
+            # But logging is optional.
+            return False, objective
+
         # 1. Check if already visited (optional, depending on algorithm logic)
         # Some algos might re-evaluate, but usually we skip.
         if self.data_manager.is_visited(point):
@@ -631,6 +647,22 @@ class _GDPoptDiscreteAlgorithm(_GDPoptAlgorithm):
         primal_improved, primal_bound = self._solve_GDP_subproblem(
             point, search_type, config
         )
+
+        # Check for global infeasibility (Requirement 3)
+        mode = getattr(self, '_evaluation_mode', None)
+        tol = getattr(config, 'preprocessing_feasibility_tol', 1e-6)
+        is_globally_infeasible = False
+        if primal_bound is None:
+            is_globally_infeasible = True
+        elif mode == "I1" and primal_bound > tol:
+            is_globally_infeasible = True
+        elif mode == "I2" and primal_bound > tol:
+            is_globally_infeasible = True
+
+        if is_globally_infeasible:
+            if not hasattr(self, "global_infeasible_points"):
+                self.global_infeasible_points = set()
+            self.global_infeasible_points.add(point)
 
         # 4. Normalize result and register the visit.
         # During preprocessing (I1/I2 modes), infeasibility measures are
